@@ -1,0 +1,9 @@
+pub mod app;
+pub mod diff;
+pub mod editor;
+pub mod feedback;
+pub mod git;
+pub mod highlight;
+pub mod staging;
+pub mod types;
+pub mod ui;

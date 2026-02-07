@@ -1,0 +1,149 @@
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+use crate::highlight::Highlighter;
+use crate::types::{FileDiff, Hunk, HunkStatus, LineKind};
+use crate::ui::theme;
+
+/// Render the diff view panel showing hunks for the selected file.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    file: Option<&FileDiff>,
+    selected_hunk: usize,
+    scroll_offset: u16,
+    focused: bool,
+    highlighter: &Highlighter,
+) {
+    let border_style = if focused {
+        theme::border_focused_style()
+    } else {
+        theme::border_unfocused_style()
+    };
+
+    let title = match file {
+        Some(f) => format!(" {} ", f.path.display()),
+        None => " No file selected ".to_string(),
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let file = match file {
+        Some(f) => f,
+        None => {
+            let paragraph = Paragraph::new("No unstaged changes to display.").block(block);
+            frame.render_widget(paragraph, area);
+            return;
+        }
+    };
+
+    let path_str = file.path.to_string_lossy().to_string();
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+        let is_selected = hunk_idx == selected_hunk;
+
+        // Hunk header line
+        let header_style = if is_selected {
+            theme::hunk_header_style().bg(theme::SELECTED_BG)
+        } else {
+            theme::hunk_header_style()
+        };
+
+        let status_indicator = hunk_status_indicator(hunk);
+        lines.push(Line::from(vec![
+            Span::styled(status_indicator, hunk_status_style(hunk)),
+            Span::raw(" "),
+            Span::styled(&hunk.header, header_style),
+        ]));
+
+        // Hunk lines
+        for diff_line in &hunk.lines {
+            let prefix = match diff_line.kind {
+                LineKind::Context => " ",
+                LineKind::Added => "+",
+                LineKind::Removed => "-",
+            };
+
+            // Build line number gutter
+            let old_no = diff_line
+                .old_lineno
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+            let new_no = diff_line
+                .new_lineno
+                .map(|n| format!("{:>4}", n))
+                .unwrap_or_else(|| "    ".to_string());
+
+            let gutter_style = Style::default()
+                .fg(theme::CONTEXT_FG)
+                .add_modifier(Modifier::DIM);
+
+            // Use syntax highlighting for the content
+            let highlighted =
+                highlighter.highlight_line(&path_str, &diff_line.content, diff_line.kind);
+
+            let mut spans = vec![
+                Span::styled(old_no, gutter_style),
+                Span::styled(" ", gutter_style),
+                Span::styled(new_no, gutter_style),
+                Span::styled(" ", gutter_style),
+                Span::styled(
+                    prefix,
+                    match diff_line.kind {
+                        LineKind::Added => Style::default()
+                            .fg(theme::ADDED_FG)
+                            .add_modifier(Modifier::BOLD),
+                        LineKind::Removed => Style::default()
+                            .fg(theme::REMOVED_FG)
+                            .add_modifier(Modifier::BOLD),
+                        LineKind::Context => Style::default().fg(theme::CONTEXT_FG),
+                    },
+                ),
+            ];
+            spans.extend(highlighted.spans);
+
+            lines.push(Line::from(spans));
+        }
+
+        // Separator between hunks
+        if hunk_idx < file.hunks.len() - 1 {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(area.width.saturating_sub(2) as usize),
+                Style::default().fg(theme::BORDER_UNFOCUSED),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll_offset, 0));
+
+    frame.render_widget(paragraph, area);
+}
+
+fn hunk_status_indicator(hunk: &Hunk) -> &'static str {
+    match hunk.status {
+        HunkStatus::Pending => "○",
+        HunkStatus::Staged => "✓",
+        HunkStatus::Skipped => "✗",
+        HunkStatus::Edited => "✎",
+        HunkStatus::Commented => "💬",
+    }
+}
+
+fn hunk_status_style(hunk: &Hunk) -> Style {
+    match hunk.status {
+        HunkStatus::Pending => Style::default().fg(theme::STATUS_PENDING_FG),
+        HunkStatus::Staged => Style::default().fg(theme::STATUS_STAGED_FG),
+        HunkStatus::Skipped => Style::default().fg(theme::STATUS_SKIPPED_FG),
+        HunkStatus::Edited => Style::default().fg(theme::STATUS_EDITED_FG),
+        HunkStatus::Commented => Style::default().fg(theme::STATUS_COMMENTED_FG),
+    }
+}

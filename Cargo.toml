@@ -1,0 +1,21 @@
+[package]
+name = "stagent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+git2 = "0.19"
+syntect = "5"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+similar = "2"
+anyhow = "1"
+glob = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.clippy]
+all = "deny"
