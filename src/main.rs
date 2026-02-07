@@ -1,13 +1,3 @@
-mod app;
-mod diff;
-mod editor;
-mod feedback;
-mod git;
-mod highlight;
-mod staging;
-mod types;
-mod ui;
-
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::path::PathBuf;
@@ -35,7 +25,7 @@ pub struct Cli {
     theme: String,
 
     /// Number of context lines to show around changes in comment feedback
-    #[arg(short = 'C', long = "context-lines", default_value_t = feedback::DEFAULT_CONTEXT_LINES)]
+    #[arg(short = 'C', long = "context-lines", default_value_t = stagent::feedback::DEFAULT_CONTEXT_LINES)]
     context_lines: usize,
 
     /// Add untracked files with intent-to-add so they appear in the diff
@@ -52,21 +42,26 @@ fn main() -> Result<()> {
     }
 
     // Open repo
-    let repo = git::open_repo(".")?;
+    let repo = stagent::git::open_repo(".")?;
 
     // Intent-to-add untracked files if requested
     if cli.intent_to_add {
-        git::intent_to_add_untracked(&repo)?;
+        stagent::git::intent_to_add_untracked(&repo)?;
     }
 
     // Get unstaged diff
-    let mut files = git::get_unstaged_diff(&repo)?;
+    let mut files = stagent::git::get_unstaged_diff(&repo)?;
 
     // Filter by glob if specified
     if let Some(ref glob_pattern) = cli.files {
-        let pattern =
-            glob::Pattern::new(glob_pattern).unwrap_or_else(|_| glob::Pattern::new("*").unwrap());
-        files.retain(|f| pattern.matches_path(&f.path));
+        match glob::Pattern::new(glob_pattern) {
+            Ok(pattern) => {
+                files.retain(|f| pattern.matches_path(&f.path));
+            }
+            Err(e) => {
+                eprintln!("Warning: invalid glob pattern '{}': {}", glob_pattern, e);
+            }
+        }
     }
 
     // Filter out binary files
@@ -85,12 +80,12 @@ fn main() -> Result<()> {
     }
 
     // Run TUI
-    let feedback = app::run(files, &repo, cli.no_stage)?;
+    let feedback = stagent::app::run(files, &repo, cli.no_stage)?;
 
     // Output feedback
     if !feedback.is_empty() {
-        let output = crate::feedback::format_feedback(&feedback, cli.context_lines);
-        feedback::write_feedback(&output, cli.output.as_deref())?;
+        let output = stagent::feedback::format_feedback(&feedback, cli.context_lines);
+        stagent::feedback::write_feedback(&output, cli.output.as_deref())?;
     }
 
     Ok(())

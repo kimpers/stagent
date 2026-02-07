@@ -54,6 +54,23 @@ pub enum LineKind {
     Removed,
 }
 
+impl LineKind {
+    /// Returns the single-character prefix used in unified diff format.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            LineKind::Context => " ",
+            LineKind::Added => "+",
+            LineKind::Removed => "-",
+        }
+    }
+}
+
+impl std::fmt::Display for Hunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.header)
+    }
+}
+
 /// Review status for a hunk during the interactive session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HunkStatus {

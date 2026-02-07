@@ -39,21 +39,39 @@ fn test_build_tmux_split_command() {
     assert!(cmd.contains(&"-h".to_string()));
     assert!(cmd.contains(&"-P".to_string()));
     assert!(cmd.contains(&"#{pane_id}".to_string()));
-    // The last argument should be the editor + filepath
-    let last = cmd.last().unwrap();
-    assert_eq!(last, "vim /tmp/test.rs");
+    // Should have -- separator
+    assert!(
+        cmd.contains(&"--".to_string()),
+        "Command should contain '--' separator"
+    );
+    // Editor and path should be separate arguments, not concatenated
+    assert!(
+        cmd.contains(&"vim".to_string()),
+        "Should contain editor as separate argument"
+    );
+    assert!(
+        cmd.contains(&"/tmp/test.rs".to_string()),
+        "Should contain path as separate argument"
+    );
 }
 
 #[test]
 fn test_build_tmux_split_respects_editor_env() {
     let cmd = build_tmux_split_command("nano", "/tmp/file.txt");
-    let last = cmd.last().unwrap();
+    // Should have -- separator before editor and path
     assert!(
-        last.starts_with("nano"),
-        "expected command to use nano, got: {}",
-        last
+        cmd.contains(&"--".to_string()),
+        "Command should contain '--' separator"
     );
-    assert_eq!(last, "nano /tmp/file.txt");
+    // Editor should be a separate argument
+    assert!(
+        cmd.contains(&"nano".to_string()),
+        "Should contain nano as separate argument"
+    );
+    assert!(
+        cmd.contains(&"/tmp/file.txt".to_string()),
+        "Should contain path as separate argument"
+    );
 }
 
 #[test]
@@ -62,8 +80,20 @@ fn test_build_tmux_split_falls_back_to_vi() {
     // but we verify the typical fallback integration:
     // get_editor() returns "vi" when neither VISUAL nor EDITOR is set.
     let cmd = build_tmux_split_command("vi", "/tmp/file.txt");
-    let last = cmd.last().unwrap();
-    assert_eq!(last, "vi /tmp/file.txt");
+    // Should have -- separator before editor and path
+    assert!(
+        cmd.contains(&"--".to_string()),
+        "Command should contain '--' separator"
+    );
+    // Editor should be a separate argument
+    assert!(
+        cmd.contains(&"vi".to_string()),
+        "Should contain vi as separate argument"
+    );
+    assert!(
+        cmd.contains(&"/tmp/file.txt".to_string()),
+        "Should contain path as separate argument"
+    );
 }
 
 #[test]

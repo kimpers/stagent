@@ -5,6 +5,7 @@ use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
 use crate::types::LineKind;
+use crate::ui::theme;
 
 /// Highlighter wraps syntect for syntax highlighting of diff lines.
 pub struct Highlighter {
@@ -34,10 +35,10 @@ impl Highlighter {
 
     /// Highlight a single line of code, returning ratatui Spans.
     /// The `kind` parameter controls the background color overlay.
-    pub fn highlight_line<'a>(&self, path: &str, content: &str, kind: LineKind) -> Line<'a> {
+    pub fn highlight_line(&self, path: &str, content: &str, kind: LineKind) -> Line<'static> {
         let bg = match kind {
-            LineKind::Added => Some(Color::Rgb(0, 60, 0)),
-            LineKind::Removed => Some(Color::Rgb(80, 0, 0)),
+            LineKind::Added => Some(theme::ADDED_BG),
+            LineKind::Removed => Some(theme::REMOVED_DIM_BG),
             LineKind::Context => None,
         };
 
@@ -46,7 +47,7 @@ impl Highlighter {
             let style = Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::DIM)
-                .bg(Color::Rgb(40, 0, 0));
+                .bg(theme::REMOVED_DIM_BG);
             return Line::from(Span::styled(content.to_string(), style));
         }
 
@@ -58,7 +59,17 @@ impl Highlighter {
             .flatten()
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-        let theme = &self.theme_set.themes["base16-ocean.dark"];
+        let theme = match self.theme_set.themes.get("base16-ocean.dark") {
+            Some(t) => t,
+            None => {
+                // Fallback to plain text if theme not found
+                let style = match bg {
+                    Some(bg_color) => Style::default().bg(bg_color),
+                    None => Style::default(),
+                };
+                return Line::from(Span::styled(content.to_string(), style));
+            }
+        };
         let mut h = HighlightLines::new(syntax, theme);
 
         let line_with_newline = if content.ends_with('\n') {
@@ -146,7 +157,7 @@ mod tests {
         let line = h.highlight_line("foo.rs", "let x = 42;", LineKind::Added);
         // All spans should have green background
         for span in &line.spans {
-            assert_eq!(span.style.bg, Some(Color::Rgb(0, 60, 0)));
+            assert_eq!(span.style.bg, Some(theme::ADDED_BG));
         }
     }
 

@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, area: Rect, files: &[FileDiff], selected: usize
         .iter()
         .enumerate()
         .map(|(i, file)| {
-            let status_icon = file_status_icon(file);
+            let (status_icon, status_style) = file_review_status(file);
             let delta_icon = delta_status_icon(file.status);
             let path_str = file.path.to_string_lossy();
 
@@ -35,7 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, files: &[FileDiff], selected: usize
             };
 
             let line = Line::from(vec![
-                Span::styled(status_icon, status_color(file)),
+                Span::styled(status_icon, status_style),
                 Span::raw(" "),
                 Span::styled(delta_icon, delta_color(file.status)),
                 Span::raw(" "),
@@ -57,41 +57,39 @@ pub fn render(frame: &mut Frame, area: Rect, files: &[FileDiff], selected: usize
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Get a status icon for the overall file review state.
-fn file_status_icon(file: &FileDiff) -> &'static str {
+/// Compute the file's review status icon and style in a single pass over hunks.
+fn file_review_status(file: &FileDiff) -> (&'static str, Style) {
     if file.hunks.is_empty() {
-        return " ";
+        return (" ", Style::default());
     }
 
-    let all_staged = file.hunks.iter().all(|h| h.status == HunkStatus::Staged);
-    let all_done = file.hunks.iter().all(|h| h.status != HunkStatus::Pending);
-    let any_staged = file.hunks.iter().any(|h| h.status == HunkStatus::Staged);
+    let mut all_staged = true;
+    let mut all_done = true;
+    let mut any_staged = false;
+
+    for h in &file.hunks {
+        match h.status {
+            HunkStatus::Staged => {
+                any_staged = true;
+            }
+            HunkStatus::Pending => {
+                all_staged = false;
+                all_done = false;
+            }
+            _ => {
+                all_staged = false;
+            }
+        }
+    }
 
     if all_staged {
-        "✓"
+        ("✓", Style::default().fg(theme::STATUS_STAGED_FG))
     } else if all_done {
-        "●"
+        ("●", Style::default().fg(theme::STATUS_EDITED_FG))
     } else if any_staged {
-        "◐"
+        ("◐", Style::default().fg(theme::STATUS_PENDING_FG))
     } else {
-        "○"
-    }
-}
-
-fn status_color(file: &FileDiff) -> Style {
-    if file.hunks.is_empty() {
-        return Style::default();
-    }
-
-    let all_staged = file.hunks.iter().all(|h| h.status == HunkStatus::Staged);
-    let all_done = file.hunks.iter().all(|h| h.status != HunkStatus::Pending);
-
-    if all_staged {
-        Style::default().fg(theme::STATUS_STAGED_FG)
-    } else if all_done {
-        Style::default().fg(theme::STATUS_EDITED_FG)
-    } else {
-        Style::default().fg(theme::STATUS_PENDING_FG)
+        ("○", Style::default().fg(theme::STATUS_PENDING_FG))
     }
 }
 

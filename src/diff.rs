@@ -8,12 +8,9 @@ use crate::types::{DeltaStatus, DiffLine, FileDiff, Hunk, HunkStatus, LineKind};
 /// Uses `diff.print()` with DiffFormat::Patch to iterate through all lines,
 /// which avoids the multiple mutable borrow issues of `diff.foreach()`.
 pub fn parse_diff(diff: &Diff) -> Result<Vec<FileDiff>> {
-    let num_deltas = diff.deltas().len();
     let mut files: Vec<FileDiff> = Vec::new();
 
-    for delta_idx in 0..num_deltas {
-        let delta = diff.deltas().nth(delta_idx).unwrap();
-
+    for delta in diff.deltas() {
         let path = delta
             .new_file()
             .path()
@@ -57,21 +54,32 @@ pub fn parse_diff(diff: &Diff) -> Result<Vec<FileDiff>> {
                 let mut lines = Vec::new();
 
                 for line_idx in 0..num_lines {
-                    if let Ok(line) = patch.line_in_hunk(hunk_idx, line_idx) {
-                        let kind = match line.origin() {
-                            '+' => LineKind::Added,
-                            '-' => LineKind::Removed,
-                            _ => LineKind::Context,
-                        };
+                    match patch.line_in_hunk(hunk_idx, line_idx) {
+                        Ok(line) => {
+                            let kind = match line.origin() {
+                                '+' => LineKind::Added,
+                                '-' => LineKind::Removed,
+                                _ => LineKind::Context,
+                            };
 
-                        let content = String::from_utf8_lossy(line.content()).to_string();
+                            let content = String::from_utf8_lossy(line.content()).to_string();
 
-                        lines.push(DiffLine {
-                            kind,
-                            content,
-                            old_lineno: line.old_lineno(),
-                            new_lineno: line.new_lineno(),
-                        });
+                            lines.push(DiffLine {
+                                kind,
+                                content,
+                                old_lineno: line.old_lineno(),
+                                new_lineno: line.new_lineno(),
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: failed to read line {} of hunk {} in {}: {}",
+                                line_idx,
+                                hunk_idx,
+                                file.path.display(),
+                                e
+                            );
+                        }
                     }
                 }
 
@@ -129,6 +137,7 @@ pub fn split_hunk(hunk: &Hunk) -> Vec<Hunk> {
     // - Up to 3 context lines before the region
     // - The changed region
     // - Up to 3 context lines after the region
+    // Context windows are clamped to avoid overlap with adjacent sub-hunks.
     let context_lines = 3usize;
     let mut sub_hunks = Vec::new();
 
@@ -136,7 +145,27 @@ pub fn split_hunk(hunk: &Hunk) -> Vec<Hunk> {
         let ctx_before_start = start.saturating_sub(context_lines);
         let ctx_after_end = (end + context_lines).min(hunk.lines.len() - 1);
 
-        let lines: Vec<DiffLine> = hunk.lines[ctx_before_start..=ctx_after_end].to_vec();
+        // Clamp to avoid overlap with the previous sub-hunk's after-context
+        let clamped_before = if region_idx > 0 {
+            let prev_end = regions[region_idx - 1].1;
+            let prev_after = (prev_end + context_lines).min(hunk.lines.len() - 1);
+            // Start after previous sub-hunk's after-context, but don't go past our region
+            ctx_before_start.max(prev_after + 1).min(start)
+        } else {
+            ctx_before_start
+        };
+
+        // Clamp to avoid overlap with the next sub-hunk's before-context
+        let clamped_after = if region_idx + 1 < regions.len() {
+            let next_start = regions[region_idx + 1].0;
+            let next_before = next_start.saturating_sub(context_lines);
+            // End before next sub-hunk's before-context, but don't go before our region
+            ctx_after_end.min(next_before.saturating_sub(1)).max(end)
+        } else {
+            ctx_after_end
+        };
+
+        let lines: Vec<DiffLine> = hunk.lines[clamped_before..=clamped_after].to_vec();
 
         // Compute line numbers for the sub-hunk header
         let mut old_count = 0u32;

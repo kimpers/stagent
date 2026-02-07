@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
-use crate::types::{FeedbackKind, HunkFeedback, LineKind};
+use crate::types::{FeedbackKind, HunkFeedback};
 
 /// Default number of context lines to show around changes in comment feedback.
 pub const DEFAULT_CONTEXT_LINES: usize = 5;
@@ -127,11 +127,7 @@ fn format_comment_with_context(output: &mut String, fb: &HunkFeedback, context_c
                 comment_idx += 1;
             }
             let line = &fb.context_lines[i];
-            let prefix = match line.kind {
-                LineKind::Context => " ",
-                LineKind::Added => "+",
-                LineKind::Removed => "-",
-            };
+            let prefix = line.kind.prefix();
             let content = line.content.trim_end_matches('\n');
             output.push_str(&format!("{}{}\n", prefix, content));
         }
@@ -161,7 +157,8 @@ pub fn write_feedback(output: &str, file_path: Option<&Path>) -> Result<()> {
                 .context("Failed to write feedback to file")?;
         }
         None => {
-            print!("{}", output);
+            use std::io::Write as _;
+            let _ = std::io::stdout().write_all(output.as_bytes());
         }
     }
 
@@ -171,6 +168,7 @@ pub fn write_feedback(output: &str, file_path: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::LineKind;
 
     #[test]
     fn test_empty_feedback() {

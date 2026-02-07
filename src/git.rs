@@ -46,8 +46,8 @@ pub fn intent_to_add_untracked(repo: &Repository) -> Result<()> {
                     flags_extended: 0,
                     path: path.as_bytes().to_vec(),
                 };
-                // Set the intent-to-add flag (bit 13 of extended flags)
-                entry.flags_extended |= (1 << 13) as u16;
+                const GIT_IDXENTRY_INTENT_TO_ADD: u16 = 1 << 13;
+                entry.flags_extended |= GIT_IDXENTRY_INTENT_TO_ADD;
 
                 index
                     .add(&entry)

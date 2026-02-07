@@ -131,14 +131,16 @@ fn test_diff_view_render() {
         output
     );
 
-    // Should show + and - prefixes for diff lines
+    // Should show specific content from the diff lines
     assert!(
-        output.contains("+"),
-        "Expected '+' prefix for added lines in output"
+        output.contains("let x = 42"),
+        "Expected added line 'let x = 42' in output:\n{}",
+        output
     );
     assert!(
-        output.contains("-"),
-        "Expected '-' prefix for removed lines in output"
+        output.contains("let x = 1"),
+        "Expected removed line 'let x = 1' in output:\n{}",
+        output
     );
 }
 

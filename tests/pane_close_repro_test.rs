@@ -9,13 +9,8 @@
 ///
 /// This test requires tmux (runs inside the current tmux session).
 #[test]
+#[ignore]
 fn test_pane_close_detected_after_process_exits() {
-    // Skip if not in tmux
-    if std::env::var("TMUX").is_err() {
-        eprintln!("Skipping: not in tmux");
-        return;
-    }
-
     use stagent::editor::{open_editor, wait_for_pane_close};
 
     // Override editor to `true` which exits immediately

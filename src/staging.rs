@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use git2::Repository;
 use std::path::Path;
 
@@ -6,21 +6,32 @@ use crate::types::{FileDiff, Hunk, LineKind};
 
 /// Stage a single hunk by reconstructing the blob content in the index.
 ///
+/// `line_offset` accounts for line count changes introduced by previously
+/// staged hunks in the same file. When staging hunks sequentially, earlier
+/// hunks may add or remove lines, shifting the positions of later hunks.
+/// The caller must compute this as the sum of `(new_lines - old_lines)` for
+/// all previously staged hunks that appear before this one in the file.
+///
 /// Algorithm (same approach as gitui):
 /// 1. Read the file's current content from the index (or empty for new/untracked files)
 /// 2. Apply the hunk's changes to produce a new version of the file
 /// 3. Write the new content as a blob
 /// 4. Update the index entry with the new blob OID
 /// 5. Write the index to disk
-pub fn stage_hunk(repo: &Repository, file_diff: &FileDiff, hunk: &Hunk) -> Result<()> {
+pub fn stage_hunk(
+    repo: &Repository,
+    file_diff: &FileDiff,
+    hunk: &Hunk,
+    line_offset: i32,
+) -> Result<()> {
     let file_path = &file_diff.path;
     let mut index = repo.index().context("Failed to get repository index")?;
 
     // Read current index content (what's already staged or HEAD content)
     let old_content = get_index_content(repo, file_path)?;
 
-    // Reconstruct content with this hunk applied
-    let new_content = reconstruct_blob(&old_content, hunk)?;
+    // Reconstruct content with this hunk applied (adjusting for offset)
+    let new_content = reconstruct_blob(&old_content, hunk, line_offset)?;
 
     // Write the new blob
     let blob_oid = repo
@@ -28,7 +39,9 @@ pub fn stage_hunk(repo: &Repository, file_diff: &FileDiff, hunk: &Hunk) -> Resul
         .context("Failed to write blob")?;
 
     // Create/update the index entry
-    let file_path_str = file_path.to_str().unwrap_or_default();
+    let file_path_str = file_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("File path is not valid UTF-8: {:?}", file_path))?;
 
     // Get existing entry or create new one
     let mut entry = if let Some(existing) = index.get_path(Path::new(file_path_str), 0) {
@@ -37,7 +50,7 @@ pub fn stage_hunk(repo: &Repository, file_diff: &FileDiff, hunk: &Hunk) -> Resul
         // New file - create a fresh index entry
         let workdir = repo.workdir().context("Bare repository not supported")?;
         let full_path = workdir.join(file_path);
-        let metadata = std::fs::metadata(&full_path)
+        let _metadata = std::fs::metadata(&full_path)
             .with_context(|| format!("Failed to read metadata for {}", full_path.display()))?;
 
         git2::IndexEntry {
@@ -48,7 +61,7 @@ pub fn stage_hunk(repo: &Repository, file_diff: &FileDiff, hunk: &Hunk) -> Resul
             mode: 0o100644,
             uid: 0,
             gid: 0,
-            file_size: metadata.len() as u32,
+            file_size: new_content.len() as u32,
             id: blob_oid,
             flags: 0,
             flags_extended: 0,
@@ -69,13 +82,22 @@ pub fn stage_hunk(repo: &Repository, file_diff: &FileDiff, hunk: &Hunk) -> Resul
 /// Returns empty string for untracked/new files.
 fn get_index_content(repo: &Repository, path: &Path) -> Result<String> {
     let index = repo.index().context("Failed to get index")?;
-    let path_str = path.to_str().unwrap_or_default();
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("File path is not valid UTF-8: {:?}", path))?;
 
     if let Some(entry) = index.get_path(Path::new(path_str), 0) {
         let blob = repo
             .find_blob(entry.id)
             .context("Failed to find blob for index entry")?;
-        let content = String::from_utf8_lossy(blob.content()).to_string();
+        if blob.content().contains(&0) {
+            bail!(
+                "File appears to be binary (contains null bytes): {:?}",
+                path
+            );
+        }
+        let content = String::from_utf8(blob.content().to_vec())
+            .with_context(|| format!("File is not valid UTF-8: {:?}", path))?;
         Ok(content)
     } else {
         // Try HEAD tree
@@ -86,7 +108,14 @@ fn get_index_content(repo: &Repository, path: &Path) -> Result<String> {
                         .to_object(repo)
                         .context("Failed to resolve tree entry")?;
                     if let Some(blob) = obj.as_blob() {
-                        return Ok(String::from_utf8_lossy(blob.content()).to_string());
+                        if blob.content().contains(&0) {
+                            bail!(
+                                "File appears to be binary (contains null bytes): {:?}",
+                                path
+                            );
+                        }
+                        return String::from_utf8(blob.content().to_vec())
+                            .with_context(|| format!("File is not valid UTF-8: {:?}", path));
                     }
                 }
             }
@@ -98,10 +127,13 @@ fn get_index_content(repo: &Repository, path: &Path) -> Result<String> {
 
 /// Reconstruct file content with a single hunk applied.
 ///
+/// `line_offset` adjusts `old_start` to account for line count changes
+/// from previously staged hunks in the same file.
+///
 /// This walks the original file line-by-line. When we reach the hunk's
 /// target range, we apply the changes (keep context, add '+' lines, skip '-' lines).
 /// Outside the hunk range, we keep original content unchanged.
-pub fn reconstruct_blob(original: &str, hunk: &Hunk) -> Result<String> {
+pub fn reconstruct_blob(original: &str, hunk: &Hunk, line_offset: i32) -> Result<String> {
     let orig_lines: Vec<&str> = if original.is_empty() {
         Vec::new()
     } else {
@@ -109,9 +141,13 @@ pub fn reconstruct_blob(original: &str, hunk: &Hunk) -> Result<String> {
     };
 
     let mut result = Vec::new();
-    let hunk_start = hunk.old_start as usize;
+    let adjusted_start = (hunk.old_start as i32 + line_offset).max(0) as usize;
     // old_start is 1-based, convert to 0-based index
-    let hunk_start_idx = if hunk_start == 0 { 0 } else { hunk_start - 1 };
+    let hunk_start_idx = if adjusted_start == 0 {
+        0
+    } else {
+        adjusted_start - 1
+    };
 
     // Count original lines consumed by this hunk (context + removed)
     let hunk_old_line_count = hunk.old_lines as usize;

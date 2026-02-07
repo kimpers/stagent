@@ -10,15 +10,23 @@ use crate::diff;
 use crate::editor;
 use crate::highlight::Highlighter;
 use crate::staging;
-use crate::types::*;
+use crate::types::{AppMode, FileDiff, FocusPanel, Hunk, HunkFeedback, HunkStatus};
 use crate::ui;
+
+/// Pending editor state while waiting for the user to close a tmux split pane.
+pub struct EditorState {
+    pub tmpfile: tempfile::NamedTempFile,
+    pub rx: Receiver<()>,
+    pub is_comment: bool,
+    pub original_content: String,
+}
 
 /// Application state for the TUI.
 pub struct App {
     pub files: Vec<FileDiff>,
     pub selected_file: usize,
     pub selected_hunk: usize,
-    pub scroll_offset: u16,
+    pub scroll_offset: u32,
     pub feedback: Vec<HunkFeedback>,
     pub mode: AppMode,
     pub focus: FocusPanel,
@@ -55,7 +63,7 @@ impl App {
             .and_then(|f| f.hunks.get(self.selected_hunk))
     }
 
-    /// Select the next file.
+    /// Select the next file (wraps around).
     pub fn select_next_file(&mut self) {
         if self.files.is_empty() {
             return;
@@ -63,13 +71,13 @@ impl App {
         if self.selected_file + 1 < self.files.len() {
             self.selected_file += 1;
         } else {
-            self.selected_file = 0; // Wrap around
+            self.selected_file = 0;
         }
         self.selected_hunk = 0;
         self.scroll_offset = 0;
     }
 
-    /// Select the previous file.
+    /// Select the previous file (wraps around).
     pub fn select_prev_file(&mut self) {
         if self.files.is_empty() {
             return;
@@ -77,13 +85,13 @@ impl App {
         if self.selected_file > 0 {
             self.selected_file -= 1;
         } else {
-            self.selected_file = self.files.len() - 1; // Wrap around
+            self.selected_file = self.files.len() - 1;
         }
         self.selected_hunk = 0;
         self.scroll_offset = 0;
     }
 
-    /// Select the next hunk (advances to next file if at end).
+    /// Select the next hunk (advances to next file if at end, wraps at last file).
     pub fn select_next_hunk(&mut self) {
         if let Some(file) = self.files.get(self.selected_file) {
             if self.selected_hunk + 1 < file.hunks.len() {
@@ -91,8 +99,11 @@ impl App {
             } else if self.selected_file + 1 < self.files.len() {
                 self.selected_file += 1;
                 self.selected_hunk = 0;
+            } else {
+                // Wrap to first hunk of first file
+                self.selected_file = 0;
+                self.selected_hunk = 0;
             }
-            // else: at last hunk of last file, do nothing
         }
         self.scroll_to_selected_hunk();
     }
@@ -128,41 +139,75 @@ impl App {
         };
     }
 
-    /// Stage the current hunk.
-    pub fn stage_current_hunk(&mut self, repo: &Repository) -> Result<()> {
-        let file_idx = self.selected_file;
-        let hunk_idx = self.selected_hunk;
-
+    /// Compute the line offset for the current hunk caused by previously staged
+    /// hunks in the same file. Each staged hunk that appears before this one
+    /// shifts line numbers by (new_lines - old_lines).
+    fn compute_line_offset(&self, file_idx: usize, hunk_idx: usize) -> i32 {
+        let mut offset: i32 = 0;
         if let Some(file) = self.files.get(file_idx) {
-            if let Some(hunk) = file.hunks.get(hunk_idx) {
-                if hunk.status == HunkStatus::Pending {
-                    if !self.no_stage {
-                        staging::stage_hunk(repo, file, hunk)?;
-                    }
-                    // Mark as staged
-                    self.files[file_idx].hunks[hunk_idx].status = HunkStatus::Staged;
-                    self.message = Some("Hunk staged".to_string());
-                    self.select_next_hunk();
+            for (idx, h) in file.hunks.iter().enumerate() {
+                if idx == hunk_idx {
+                    break;
+                }
+                if h.status == HunkStatus::Staged {
+                    offset += h.new_lines as i32 - h.old_lines as i32;
                 }
             }
         }
+        offset
+    }
+
+    /// Access the current pending hunk mutably and execute a closure on it.
+    /// Returns `true` if the closure was executed (hunk exists and is Pending).
+    fn with_current_pending_hunk<F>(&mut self, repo: Option<&Repository>, f: F) -> Result<bool>
+    where
+        F: FnOnce(&mut Self, usize, usize, Option<&Repository>) -> Result<()>,
+    {
+        let file_idx = self.selected_file;
+        let hunk_idx = self.selected_hunk;
+
+        let is_pending = self
+            .files
+            .get(file_idx)
+            .and_then(|file| file.hunks.get(hunk_idx))
+            .is_some_and(|hunk| hunk.status == HunkStatus::Pending);
+
+        if is_pending {
+            f(self, file_idx, hunk_idx, repo)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Stage the current hunk.
+    pub fn stage_current_hunk(&mut self, repo: &Repository) -> Result<()> {
+        self.with_current_pending_hunk(Some(repo), |app, fi, hi, repo| {
+            if !app.no_stage {
+                let offset = app.compute_line_offset(fi, hi);
+                staging::stage_hunk(
+                    repo.unwrap(),
+                    &app.files[fi],
+                    &app.files[fi].hunks[hi],
+                    offset,
+                )?;
+            }
+            app.files[fi].hunks[hi].status = HunkStatus::Staged;
+            app.message = Some("Hunk staged".to_string());
+            app.select_next_hunk();
+            Ok(())
+        })?;
         Ok(())
     }
 
     /// Skip the current hunk.
     pub fn skip_current_hunk(&mut self) {
-        let file_idx = self.selected_file;
-        let hunk_idx = self.selected_hunk;
-
-        if let Some(file) = self.files.get(file_idx) {
-            if let Some(hunk) = file.hunks.get(hunk_idx) {
-                if hunk.status == HunkStatus::Pending {
-                    self.files[file_idx].hunks[hunk_idx].status = HunkStatus::Skipped;
-                    self.message = Some("Hunk skipped".to_string());
-                    self.select_next_hunk();
-                }
-            }
-        }
+        let _ = self.with_current_pending_hunk(None, |app, fi, hi, _| {
+            app.files[fi].hunks[hi].status = HunkStatus::Skipped;
+            app.message = Some("Hunk skipped".to_string());
+            app.select_next_hunk();
+            Ok(())
+        });
     }
 
     /// Split the current hunk into sub-hunks.
@@ -184,40 +229,38 @@ impl App {
         }
     }
 
-    /// Start the edit flow for the current hunk.
-    /// Returns (tmpfile, pane_close_rx, original_content).
-    pub fn start_edit(
+    /// Start the editor flow for the current hunk (edit or comment).
+    fn start_editor_flow(
         &mut self,
-    ) -> Result<Option<(tempfile::NamedTempFile, Receiver<()>, String)>> {
+        prepare_fn: fn(&Hunk) -> Result<tempfile::NamedTempFile>,
+        is_comment: bool,
+    ) -> Result<Option<EditorState>> {
         if let Some(hunk) = self.current_hunk() {
-            let tmpfile = editor::prepare_edit_tempfile(hunk)?;
+            let tmpfile = prepare_fn(hunk)?;
             let original_content = std::fs::read_to_string(tmpfile.path())?;
             let tmp_path = tmpfile.path().to_string_lossy().to_string();
             let pane_id = editor::open_editor(&tmp_path)?;
             let rx = editor::wait_for_pane_close(pane_id);
             self.mode = AppMode::WaitingForEditor;
-            Ok(Some((tmpfile, rx, original_content)))
+            Ok(Some(EditorState {
+                tmpfile,
+                rx,
+                is_comment,
+                original_content,
+            }))
         } else {
             Ok(None)
         }
     }
 
+    /// Start the edit flow for the current hunk.
+    pub fn start_edit(&mut self) -> Result<Option<EditorState>> {
+        self.start_editor_flow(editor::prepare_edit_tempfile, false)
+    }
+
     /// Start the comment flow for the current hunk.
-    /// Returns (tmpfile, pane_close_rx, original_content).
-    pub fn start_comment(
-        &mut self,
-    ) -> Result<Option<(tempfile::NamedTempFile, Receiver<()>, String)>> {
-        if let Some(hunk) = self.current_hunk() {
-            let tmpfile = editor::prepare_comment_tempfile(hunk)?;
-            let original_content = std::fs::read_to_string(tmpfile.path())?;
-            let tmp_path = tmpfile.path().to_string_lossy().to_string();
-            let pane_id = editor::open_editor(&tmp_path)?;
-            let rx = editor::wait_for_pane_close(pane_id);
-            self.mode = AppMode::WaitingForEditor;
-            Ok(Some((tmpfile, rx, original_content)))
-        } else {
-            Ok(None)
-        }
+    pub fn start_comment(&mut self) -> Result<Option<EditorState>> {
+        self.start_editor_flow(editor::prepare_comment_tempfile, true)
     }
 
     /// Handle a mouse click at the given coordinates.
@@ -258,12 +301,13 @@ impl App {
         let edited = std::fs::read_to_string(tmpfile_path).unwrap_or_default();
         let mut captured = false;
 
-        if is_comment {
-            if let Some(file) = self.current_file() {
-                let file_path = file.path.to_string_lossy().to_string();
-                if let Some(hunk) = self.current_hunk() {
-                    let hunk_header = hunk.header.clone();
-                    let hunk_lines = hunk.lines.clone();
+        if let Some(file) = self.current_file() {
+            let file_path = file.path.to_string_lossy().to_string();
+            if let Some(hunk) = self.current_hunk() {
+                let hunk_header = hunk.header.clone();
+                let hunk_lines = hunk.lines.clone();
+
+                if is_comment {
                     if let Some(fb) = editor::parse_comment_result(
                         original_content,
                         &edited,
@@ -277,37 +321,21 @@ impl App {
                         self.files[fi].hunks[hi].status = HunkStatus::Commented;
                         captured = true;
                     }
-                }
-            }
-        } else if let Some(file) = self.current_file() {
-            let file_path = file.path.to_string_lossy().to_string();
-            if let Some(hunk) = self.current_hunk() {
-                let hunk_header = hunk.header.clone();
-                let hunk_lines = hunk.lines.clone();
-                let mut original = String::new();
-                for line in &hunk.lines {
-                    match line.kind {
-                        LineKind::Context | LineKind::Added => {
-                            original.push_str(&line.content);
-                            if !line.content.ends_with('\n') {
-                                original.push('\n');
-                            }
-                        }
-                        LineKind::Removed => {}
+                } else {
+                    let original = editor::extract_new_side_content(&hunk_lines);
+                    if let Some(fb) = editor::parse_edit_result(
+                        &original,
+                        &edited,
+                        &file_path,
+                        &hunk_header,
+                        &hunk_lines,
+                    ) {
+                        self.feedback.push(fb);
+                        let fi = self.selected_file;
+                        let hi = self.selected_hunk;
+                        self.files[fi].hunks[hi].status = HunkStatus::Edited;
+                        captured = true;
                     }
-                }
-                if let Some(fb) = editor::parse_edit_result(
-                    &original,
-                    &edited,
-                    &file_path,
-                    &hunk_header,
-                    &hunk_lines,
-                ) {
-                    self.feedback.push(fb);
-                    let fi = self.selected_file;
-                    let hi = self.selected_hunk;
-                    self.files[fi].hunks[hi].status = HunkStatus::Edited;
-                    captured = true;
                 }
             }
         }
@@ -317,8 +345,7 @@ impl App {
 
     /// Estimate scroll position for the currently selected hunk.
     fn scroll_to_selected_hunk(&mut self) {
-        // Rough estimate: each hunk takes header + its lines + separator
-        let mut line_count: u16 = 0;
+        let mut line_count: u32 = 0;
         if let Some(file) = self.files.get(self.selected_file) {
             for (idx, hunk) in file.hunks.iter().enumerate() {
                 if idx == self.selected_hunk {
@@ -326,10 +353,24 @@ impl App {
                     return;
                 }
                 line_count += 1; // header
-                line_count += hunk.lines.len() as u16;
+                line_count += hunk.lines.len() as u32;
                 line_count += 1; // separator
             }
         }
+    }
+}
+
+/// Guard that restores terminal state on drop (including panics).
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+        );
     }
 }
 
@@ -344,15 +385,16 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
         crossterm::event::EnableMouseCapture,
     )?;
 
+    // Guard ensures terminal is restored even on panic
+    let _guard = TerminalGuard;
+
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let mut app = App::new(files, no_stage);
     let highlighter = Highlighter::new();
 
-    // Editor state tracking:
-    // (tmpfile, rx, is_comment, original_content)
-    let mut editor_state: Option<(tempfile::NamedTempFile, Receiver<()>, bool, String)> = None;
+    let mut editor_state: Option<EditorState> = None;
 
     let result = loop {
         // Draw
@@ -361,12 +403,17 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
         })?;
 
         // Check if editor has closed
-        if let Some((ref tmpfile, ref rx, is_comment, ref original_content)) = editor_state {
-            if rx.try_recv().is_ok() {
-                let captured =
-                    app.flush_pending_editor_state(tmpfile.path(), is_comment, original_content);
+        if let Some(ref state) = editor_state {
+            if state.rx.try_recv().is_ok() {
+                // Take ownership to process
+                let state = editor_state.take().unwrap();
+                let captured = app.flush_pending_editor_state(
+                    state.tmpfile.path(),
+                    state.is_comment,
+                    &state.original_content,
+                );
                 app.message = Some(if captured {
-                    if is_comment {
+                    if state.is_comment {
                         "Comment captured".to_string()
                     } else {
                         "Edit captured".to_string()
@@ -374,7 +421,6 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                 } else {
                     "No changes detected".to_string()
                 });
-                editor_state = None;
             }
         }
 
@@ -385,17 +431,11 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                     if app.mode == AppMode::WaitingForEditor {
                         // Only allow quit while waiting for editor
                         if key.code == KeyCode::Char('q') {
-                            // Flush pending editor result before quitting.
-                            // The user may press q before the 500ms poll thread
-                            // detects the pane closed, but vim has already written
-                            // the file, so we can read it directly.
-                            if let Some((tmpfile, _rx, is_comment, original_content)) =
-                                editor_state.take()
-                            {
+                            if let Some(state) = editor_state.take() {
                                 app.flush_pending_editor_state(
-                                    tmpfile.path(),
-                                    is_comment,
-                                    &original_content,
+                                    state.tmpfile.path(),
+                                    state.is_comment,
+                                    &state.original_content,
                                 );
                             }
                             break Ok(app.feedback);
@@ -432,8 +472,8 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                         KeyCode::Char('n') => app.skip_current_hunk(),
                         KeyCode::Char('s') => app.split_current_hunk(),
                         KeyCode::Char('e') => match app.start_edit() {
-                            Ok(Some((tmpfile, rx, original_content))) => {
-                                editor_state = Some((tmpfile, rx, false, original_content));
+                            Ok(Some(state)) => {
+                                editor_state = Some(state);
                             }
                             Ok(None) => {
                                 app.message = Some("No hunk selected".to_string());
@@ -443,8 +483,8 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                             }
                         },
                         KeyCode::Char('c') => match app.start_comment() {
-                            Ok(Some((tmpfile, rx, original_content))) => {
-                                editor_state = Some((tmpfile, rx, true, original_content));
+                            Ok(Some(state)) => {
+                                editor_state = Some(state);
                             }
                             Ok(None) => {
                                 app.message = Some("No hunk selected".to_string());
@@ -469,22 +509,14 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
         }
     };
 
-    // Restore terminal
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-    )?;
-    terminal.show_cursor()?;
-
+    // _guard will restore terminal on drop
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::*;
+    use crate::types::{DeltaStatus, DiffLine, HunkStatus, LineKind};
 
     fn make_test_files() -> Vec<FileDiff> {
         vec![
@@ -623,6 +655,18 @@ mod tests {
     }
 
     #[test]
+    fn test_next_hunk_wraps_at_end() {
+        let mut app = App::new(make_test_files(), false);
+        // Navigate to last hunk of last file
+        app.selected_file = 1;
+        app.selected_hunk = 0; // only one hunk
+        app.select_next_hunk();
+        // Should wrap to first hunk of first file
+        assert_eq!(app.selected_file, 0);
+        assert_eq!(app.selected_hunk, 0);
+    }
+
+    #[test]
     fn test_scroll_down() {
         let mut app = App::new(make_test_files(), false);
         app.scroll_down();
@@ -683,12 +727,12 @@ mod tests {
 
     #[test]
     fn test_all_hunks_staged_marks_file() {
-        let mut app = App::new(make_test_files(), false);
-        // File 1 (src/b.rs) has only 1 hunk — stage it
+        let mut app = App::new(make_test_files(), true);
+        // Stage first file's hunks via skip (since no_stage=true)
         app.selected_file = 1;
-        app.files[1].hunks[0].status = HunkStatus::Staged;
+        app.skip_current_hunk();
         let file = &app.files[1];
-        assert!(file.hunks.iter().all(|h| h.status == HunkStatus::Staged));
+        assert!(file.hunks.iter().all(|h| h.status != HunkStatus::Pending));
     }
 
     #[test]
@@ -709,5 +753,24 @@ mod tests {
         // Click outside the file list area
         app.handle_mouse_click(25, 2);
         assert_eq!(app.selected_file, 0); // unchanged
+    }
+
+    #[test]
+    fn test_compute_line_offset_no_staged() {
+        let app = App::new(make_test_files(), false);
+        assert_eq!(app.compute_line_offset(0, 1), 0);
+    }
+
+    #[test]
+    fn test_compute_line_offset_with_staged() {
+        let mut app = App::new(make_test_files(), false);
+        // First hunk: old_lines=3, new_lines=3 → offset 0
+        app.files[0].hunks[0].status = HunkStatus::Staged;
+        assert_eq!(app.compute_line_offset(0, 1), 0);
+
+        // Change first hunk to have different new_lines
+        app.files[0].hunks[0].new_lines = 5;
+        // offset = 5 - 3 = 2
+        assert_eq!(app.compute_line_offset(0, 1), 2);
     }
 }

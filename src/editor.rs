@@ -5,9 +5,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use crate::types::{FeedbackKind, Hunk, HunkFeedback, LineKind};
+use crate::types::{DiffLine, FeedbackKind, Hunk, HunkFeedback, LineKind};
 
-/// Build the tmux split-window command string.
+/// Build the tmux split-window command arguments.
+///
+/// The editor and file path are passed as separate shell-quoted arguments
+/// to avoid command injection via `$EDITOR` or paths with special characters.
 pub fn build_tmux_split_command(editor: &str, file_path: &str) -> Vec<String> {
     vec![
         "tmux".to_string(),
@@ -18,7 +21,9 @@ pub fn build_tmux_split_command(editor: &str, file_path: &str) -> Vec<String> {
         "-P".to_string(),
         "-F".to_string(),
         "#{pane_id}".to_string(),
-        format!("{} {}", editor, file_path),
+        "--".to_string(),
+        editor.to_string(),
+        file_path.to_string(),
     ]
 }
 
@@ -67,17 +72,25 @@ pub fn open_editor(file_path: &str) -> Result<String> {
     Ok(pane_id)
 }
 
+/// Maximum number of poll iterations before giving up on pane close detection.
+/// At 500ms per poll, this is ~5 minutes.
+const MAX_PANE_POLL_ITERATIONS: u32 = 600;
+
 /// Wait for a tmux pane to close by polling whether the pane still exists.
 /// Returns a receiver that signals when the pane closes.
 pub fn wait_for_pane_close(pane_id: String) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
 
-    thread::spawn(move || loop {
-        if !pane_exists(&pane_id) {
-            let _ = tx.send(());
-            return;
+    thread::spawn(move || {
+        for _ in 0..MAX_PANE_POLL_ITERATIONS {
+            if !pane_exists(&pane_id) {
+                let _ = tx.send(());
+                return;
+            }
+            thread::sleep(Duration::from_millis(500));
         }
-        thread::sleep(Duration::from_millis(500));
+        // Timeout: send signal anyway so the UI doesn't hang forever
+        let _ = tx.send(());
     });
 
     rx
@@ -96,6 +109,24 @@ fn pane_exists(pane_id: &str) -> bool {
     }
 }
 
+/// Extract the "new side" content from hunk lines (context + added, skipping removed).
+/// This is the content that represents the new version of the code.
+pub fn extract_new_side_content(lines: &[DiffLine]) -> String {
+    let mut content = String::new();
+    for line in lines {
+        match line.kind {
+            LineKind::Context | LineKind::Added => {
+                content.push_str(&line.content);
+                if !line.content.ends_with('\n') {
+                    content.push('\n');
+                }
+            }
+            LineKind::Removed => {}
+        }
+    }
+    content
+}
+
 /// Prepare a tempfile for editing a hunk.
 /// Contains the new-side code (context + added lines, not removed lines).
 pub fn prepare_edit_tempfile(hunk: &Hunk) -> Result<tempfile::NamedTempFile> {
@@ -105,21 +136,8 @@ pub fn prepare_edit_tempfile(hunk: &Hunk) -> Result<tempfile::NamedTempFile> {
         .tempfile()
         .context("Failed to create temp file")?;
 
-    for line in &hunk.lines {
-        match line.kind {
-            LineKind::Context | LineKind::Added => {
-                write!(tmpfile, "{}", line.content)?;
-                // Ensure trailing newline
-                if !line.content.ends_with('\n') {
-                    writeln!(tmpfile)?;
-                }
-            }
-            LineKind::Removed => {
-                // Skip removed lines in edit view
-            }
-        }
-    }
-
+    let content = extract_new_side_content(&hunk.lines);
+    write!(tmpfile, "{}", content)?;
     tmpfile.flush()?;
     Ok(tmpfile)
 }
@@ -138,16 +156,11 @@ pub fn prepare_comment_tempfile(hunk: &Hunk) -> Result<tempfile::NamedTempFile> 
         tmpfile,
         "# Any new lines you add will be captured as comments."
     )?;
-    writeln!(tmpfile, "# {}", hunk.header)?;
+    writeln!(tmpfile, "# {}", hunk)?;
     writeln!(tmpfile)?;
 
     for line in &hunk.lines {
-        let prefix = match line.kind {
-            LineKind::Context => " ",
-            LineKind::Added => "+",
-            LineKind::Removed => "-",
-        };
-        write!(tmpfile, "{}{}", prefix, line.content)?;
+        write!(tmpfile, "{}{}", line.kind.prefix(), line.content)?;
         if !line.content.ends_with('\n') {
             writeln!(tmpfile)?;
         }
@@ -173,7 +186,7 @@ pub fn parse_edit_result(
     let mut unified = String::new();
 
     for hunk in diff.unified_diff().iter_hunks() {
-        unified.push_str(&format!("{}", hunk));
+        unified.push_str(&hunk.to_string());
     }
 
     if unified.is_empty() {

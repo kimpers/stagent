@@ -3,21 +3,17 @@ use ratatui::style::{Color, Modifier, Style};
 // --- Diff-so-fancy inspired theme ---
 
 /// Background for added lines
-#[allow(dead_code)]
 pub const ADDED_BG: Color = Color::Rgb(0, 60, 0);
 /// Foreground for added line prefix (+)
 pub const ADDED_FG: Color = Color::Green;
 
 /// Background for removed lines
-#[allow(dead_code)]
 pub const REMOVED_BG: Color = Color::Rgb(80, 0, 0);
 /// Foreground for removed line prefix (-)
 pub const REMOVED_FG: Color = Color::Red;
 
 /// Dimmed removed line (for syntax-highlighted view)
-#[allow(dead_code)]
 pub const REMOVED_DIM_FG: Color = Color::Red;
-#[allow(dead_code)]
 pub const REMOVED_DIM_BG: Color = Color::Rgb(40, 0, 0);
 
 /// Context lines (unchanged)
@@ -49,13 +45,11 @@ pub const BORDER_FOCUSED: Color = Color::Cyan;
 pub const BORDER_UNFOCUSED: Color = Color::DarkGray;
 
 /// Helper to create a style for added lines
-#[allow(dead_code)]
 pub fn added_style() -> Style {
     Style::default().fg(ADDED_FG).bg(ADDED_BG)
 }
 
 /// Helper to create a style for removed lines
-#[allow(dead_code)]
 pub fn removed_style() -> Style {
     Style::default()
         .fg(REMOVED_DIM_FG)
@@ -64,7 +58,6 @@ pub fn removed_style() -> Style {
 }
 
 /// Helper for context lines
-#[allow(dead_code)]
 pub fn context_style() -> Style {
     Style::default().fg(CONTEXT_FG)
 }
@@ -77,7 +70,6 @@ pub fn hunk_header_style() -> Style {
 }
 
 /// Helper for file headers
-#[allow(dead_code)]
 pub fn file_header_style() -> Style {
     Style::default()
         .fg(FILE_HEADER_FG)

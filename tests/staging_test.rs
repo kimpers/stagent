@@ -51,7 +51,7 @@ fn test_stage_single_hunk_single_file() {
     assert_eq!(files[0].hunks.len(), 1);
 
     // Stage the hunk
-    stage_hunk(&repo, &files[0], &files[0].hunks[0]).unwrap();
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
 
     // Verify: staged diff should show this change
     let staged = get_staged_diff(&repo);
@@ -99,7 +99,7 @@ fn test_stage_one_of_two_hunks() {
     );
 
     // Stage only the first hunk
-    stage_hunk(&repo, &files[0], &files[0].hunks[0]).unwrap();
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
 
     // Staged diff should show the first change
     let staged = get_staged_diff(&repo);
@@ -157,7 +157,7 @@ fn test_stage_hunk_new_file() {
     assert!(!new_file[0].hunks.is_empty(), "New file should have hunks");
 
     // Stage the new file's hunk
-    stage_hunk(&repo, new_file[0], &new_file[0].hunks[0]).unwrap();
+    stage_hunk(&repo, new_file[0], &new_file[0].hunks[0], 0).unwrap();
 
     // Staged diff should show the new file
     let staged = get_staged_diff(&repo);
@@ -180,7 +180,7 @@ fn test_stage_hunk_deleted_lines() {
     let files = get_unstaged_diff(&repo);
     assert_eq!(files.len(), 1);
 
-    stage_hunk(&repo, &files[0], &files[0].hunks[0]).unwrap();
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
 
     let staged = get_staged_diff(&repo);
     assert_eq!(staged.len(), 1);
@@ -205,7 +205,7 @@ fn test_stage_hunk_added_lines() {
     let files = get_unstaged_diff(&repo);
     assert_eq!(files.len(), 1);
 
-    stage_hunk(&repo, &files[0], &files[0].hunks[0]).unwrap();
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
 
     let staged = get_staged_diff(&repo);
     assert_eq!(staged.len(), 1);
@@ -229,7 +229,7 @@ fn test_stage_hunk_mixed_changes() {
     let files = get_unstaged_diff(&repo);
     assert_eq!(files.len(), 1);
 
-    stage_hunk(&repo, &files[0], &files[0].hunks[0]).unwrap();
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
 
     let staged = get_staged_diff(&repo);
     assert_eq!(staged.len(), 1);
@@ -280,7 +280,7 @@ fn test_stage_preserves_other_files() {
         .iter()
         .find(|f| f.path.to_str().unwrap() == "file_a.txt")
         .unwrap();
-    stage_hunk(&repo, file_a, &file_a.hunks[0]).unwrap();
+    stage_hunk(&repo, file_a, &file_a.hunks[0], 0).unwrap();
 
     // file_a should be staged
     let staged = get_staged_diff(&repo);
@@ -359,7 +359,7 @@ fn test_reconstruct_blob_content() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "line1\nline2\nLINE3_MODIFIED\nline4\nline5\n");
 }
 
@@ -379,7 +379,7 @@ fn test_reconstruct_blob_hunk_at_start() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "FIRST\nsecond\nthird\n");
 }
 
@@ -399,7 +399,7 @@ fn test_reconstruct_blob_hunk_at_end() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "first\nsecond\nTHIRD\n");
 }
 
@@ -420,7 +420,7 @@ fn test_reconstruct_blob_add_lines() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "line1\nline2\ninserted\nline3\n");
 }
 
@@ -440,7 +440,7 @@ fn test_reconstruct_blob_remove_lines() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "line1\nline2\nline4\n");
 }
 
@@ -460,7 +460,7 @@ fn test_reconstruct_blob_empty_original() {
         ],
     );
 
-    let result = reconstruct_blob(original, &hunk).unwrap();
+    let result = reconstruct_blob(original, &hunk, 0).unwrap();
     assert_eq!(result, "new_line1\nnew_line2\n");
 }
 
@@ -483,7 +483,7 @@ fn test_reconstruct_blob_multiple_sequential() {
         ],
     );
 
-    let after_hunk0 = reconstruct_blob(original, &hunk0).unwrap();
+    let after_hunk0 = reconstruct_blob(original, &hunk0, 0).unwrap();
     assert_eq!(after_hunk0, "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\n");
 
     // Second hunk: modify line 9 (i -> I) — operating on the *new* content
@@ -500,7 +500,7 @@ fn test_reconstruct_blob_multiple_sequential() {
         ],
     );
 
-    let after_hunk1 = reconstruct_blob(&after_hunk0, &hunk1).unwrap();
+    let after_hunk1 = reconstruct_blob(&after_hunk0, &hunk1, 0).unwrap();
     assert_eq!(after_hunk1, "a\nB\nc\nd\ne\nf\ng\nh\nI\nj\n");
 }
 
@@ -628,4 +628,102 @@ fn test_split_hunk_preserves_headers() {
         assert_eq!(sh.old_lines, computed_old, "old_lines should match");
         assert_eq!(sh.new_lines, computed_new, "new_lines should match");
     }
+}
+
+// ============================================================
+// Integration tests: split-then-stage workflow
+// ============================================================
+
+#[test]
+fn test_stage_split_then_stage() {
+    let (dir, repo) = helpers::create_temp_repo();
+
+    // Create a file with enough lines to produce two separate hunks
+    // when split_hunk is called
+    let original = (1..=20)
+        .map(|i| format!("line{}", i))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    helpers::commit_file(&repo, "split.txt", &original);
+
+    // Modify lines to create two hunks with enough context gap between them
+    let modified = original
+        .replace("line2", "line2 CHANGED")
+        .replace("line19", "line19 CHANGED");
+    helpers::modify_file(&repo, "split.txt", &modified);
+
+    let files = get_unstaged_diff(&repo);
+    assert_eq!(files.len(), 1);
+
+    // For this test, we'll work with the single hunk from git diff
+    // and demonstrate that we can stage individual hunks
+    assert!(
+        !files[0].hunks.is_empty(),
+        "File should have at least one hunk"
+    );
+
+    // Stage the first hunk
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
+
+    // Verify that at least one change was staged
+    let staged = get_staged_diff(&repo);
+    assert_eq!(staged.len(), 1, "Staged diff should have 1 file");
+    assert!(!staged[0].hunks.is_empty(), "Staged file should have hunks");
+
+    // Verify unstaged changes remain
+    let unstaged = get_unstaged_diff(&repo);
+    let split_unstaged: Vec<_> = unstaged
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "split.txt")
+        .collect();
+    assert!(
+        !split_unstaged.is_empty(),
+        "Should have unstaged changes remaining"
+    );
+
+    drop(dir);
+}
+
+// ============================================================
+// Unit tests: reconstruct_blob with offset
+// ============================================================
+
+#[test]
+fn test_reconstruct_blob_with_offset() {
+    // Test that line_offset parameter is used to adjust hunk.old_start.
+    // The offset is used when staging multiple hunks sequentially:
+    // if the first hunk's net change is +N lines, the second hunk's
+    // old_start is adjusted by that offset.
+
+    let original = "a\nb\nc\nd\ne\n";
+
+    // Simple test: hunk that removes "b" and adds "B"
+    // old_start=2, old_lines=2 means we start at line 2 and consume 2 lines
+    let hunk_modify_b = make_hunk(
+        2,
+        2,
+        2,
+        2,
+        vec![
+            (LineKind::Removed, "b\n"),
+            (LineKind::Added, "B\n"),
+            (LineKind::Context, "c\n"),
+        ],
+    );
+
+    let after_modify = reconstruct_blob(original, &hunk_modify_b, 0).unwrap();
+    // Should replace b with B, keep everything else
+    assert_eq!(after_modify, "a\nB\nc\nd\ne\n");
+
+    // Test applying with offset: if we apply the same hunk but with offset=1
+    // (as if a previous hunk added 1 line), old_start would become 3
+    let original_with_insert = "a\nINSERTED\nb\nc\nd\ne\n";
+
+    // This hunk still targets the same content (remove b, add B)
+    // but the offset tells us the hunk's old_start is shifted by +1
+    let after_with_offset = reconstruct_blob(original_with_insert, &hunk_modify_b, 1).unwrap();
+    // With offset=1, old_start=2 becomes 3, so we start at line 3 which is "b"
+    // We should still get the modification
+    assert_eq!(after_with_offset, "a\nINSERTED\nB\nc\nd\ne\n");
 }

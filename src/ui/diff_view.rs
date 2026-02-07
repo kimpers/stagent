@@ -14,7 +14,7 @@ pub fn render(
     area: Rect,
     file: Option<&FileDiff>,
     selected_hunk: usize,
-    scroll_offset: u16,
+    scroll_offset: u32,
     focused: bool,
     highlighter: &Highlighter,
 ) {
@@ -65,11 +65,7 @@ pub fn render(
 
         // Hunk lines
         for diff_line in &hunk.lines {
-            let prefix = match diff_line.kind {
-                LineKind::Context => " ",
-                LineKind::Added => "+",
-                LineKind::Removed => "-",
-            };
+            let prefix = diff_line.kind.prefix();
 
             // Build line number gutter
             let old_no = diff_line
@@ -123,7 +119,7 @@ pub fn render(
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((scroll_offset, 0));
+        .scroll((scroll_offset as u16, 0));
 
     frame.render_widget(paragraph, area);
 }
