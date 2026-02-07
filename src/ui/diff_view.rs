@@ -4,7 +4,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::highlight::Highlighter;
 use crate::types::{FileDiff, Hunk, HunkStatus, LineKind};
 use crate::ui::theme;
 
@@ -16,7 +15,7 @@ pub fn render(
     selected_hunk: usize,
     scroll_offset: u32,
     focused: bool,
-    highlighter: &Highlighter,
+    highlighted_lines: Option<&Vec<Vec<Line<'static>>>>,
 ) {
     let border_style = if focused {
         theme::border_focused_style()
@@ -43,7 +42,6 @@ pub fn render(
         }
     };
 
-    let path_str = file.path.to_string_lossy().to_string();
     let mut lines: Vec<Line> = Vec::new();
 
     for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
@@ -64,7 +62,7 @@ pub fn render(
         ]));
 
         // Hunk lines
-        for diff_line in &hunk.lines {
+        for (line_idx, diff_line) in hunk.lines.iter().enumerate() {
             let prefix = diff_line.kind.prefix();
 
             // Build line number gutter
@@ -81,9 +79,12 @@ pub fn render(
                 .fg(theme::CONTEXT_FG)
                 .add_modifier(Modifier::DIM);
 
-            // Use syntax highlighting for the content
-            let highlighted =
-                highlighter.highlight_line(&path_str, &diff_line.content, diff_line.kind);
+            // Use cached syntax highlighting
+            let highlighted = highlighted_lines
+                .and_then(|h| h.get(hunk_idx))
+                .and_then(|h| h.get(line_idx))
+                .cloned()
+                .unwrap_or_else(|| Line::from(diff_line.content.clone()));
 
             let mut spans = vec![
                 Span::styled(old_no, gutter_style),

@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use git2::{Repository, Signature};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tempfile::TempDir;
 
 /// Create a temporary git repository with an initial commit.

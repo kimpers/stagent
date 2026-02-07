@@ -46,6 +46,20 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
         app.focus == crate::types::FocusPanel::FileList,
     );
 
+    // Rebuild highlight cache if needed
+    let needs_rebuild = match &app.highlight_cache {
+        Some((idx, _)) => *idx != app.selected_file,
+        None => true,
+    };
+    if needs_rebuild {
+        if let Some(file) = app.current_file() {
+            let path_str = file.path.to_string_lossy().to_string();
+            let lines = highlighter.highlight_file_lines(&path_str, &file.hunks);
+            app.highlight_cache = Some((app.selected_file, lines));
+        }
+    }
+    let cached = app.highlight_cache.as_ref().map(|(_, lines)| lines);
+
     // Render diff view
     let current_file = app.current_file();
     diff_view::render(
@@ -55,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
         app.selected_hunk,
         app.scroll_offset,
         app.focus == crate::types::FocusPanel::DiffView,
-        highlighter,
+        cached,
     );
 
     // Render status bar

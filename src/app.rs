@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
 use git2::Repository;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use std::io;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -34,6 +35,10 @@ pub struct App {
     pub no_stage: bool,
     /// Cached file list area for mouse click mapping.
     pub file_list_area: Rect,
+    /// Whether the UI needs to be redrawn.
+    pub dirty: bool,
+    /// Cached highlighted lines: (file_index, per-hunk lines).
+    pub highlight_cache: Option<(usize, Vec<Vec<Line<'static>>>)>,
 }
 
 impl App {
@@ -49,6 +54,8 @@ impl App {
             message: None,
             no_stage,
             file_list_area: Rect::default(),
+            dirty: true,
+            highlight_cache: None,
         }
     }
 
@@ -75,6 +82,7 @@ impl App {
         }
         self.selected_hunk = 0;
         self.scroll_offset = 0;
+        self.dirty = true;
     }
 
     /// Select the previous file (wraps around).
@@ -89,6 +97,7 @@ impl App {
         }
         self.selected_hunk = 0;
         self.scroll_offset = 0;
+        self.dirty = true;
     }
 
     /// Select the next hunk (advances to next file if at end, wraps at last file).
@@ -106,6 +115,7 @@ impl App {
             }
         }
         self.scroll_to_selected_hunk();
+        self.dirty = true;
     }
 
     /// Select the previous hunk (goes to previous file if at start).
@@ -119,16 +129,19 @@ impl App {
             }
         }
         self.scroll_to_selected_hunk();
+        self.dirty = true;
     }
 
     /// Scroll the diff view down.
     pub fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_add(1);
+        self.dirty = true;
     }
 
     /// Scroll the diff view up.
     pub fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        self.dirty = true;
     }
 
     /// Toggle focus between file list and diff view.
@@ -137,6 +150,7 @@ impl App {
             FocusPanel::FileList => FocusPanel::DiffView,
             FocusPanel::DiffView => FocusPanel::FileList,
         };
+        self.dirty = true;
     }
 
     /// Compute the line offset for the current hunk caused by previously staged
@@ -222,11 +236,13 @@ impl App {
                     let file = &mut self.files[file_idx];
                     file.hunks.splice(hunk_idx..=hunk_idx, sub_hunks);
                     self.message = Some("Hunk split".to_string());
+                    self.highlight_cache = None;
                 } else {
                     self.message = Some("Cannot split hunk further".to_string());
                 }
             }
         }
+        self.dirty = true;
     }
 
     /// Start the editor flow for the current hunk (edit or comment).
@@ -242,6 +258,7 @@ impl App {
             let pane_id = editor::open_editor(&tmp_path)?;
             let rx = editor::wait_for_pane_close(pane_id);
             self.mode = AppMode::WaitingForEditor;
+            self.dirty = true;
             Ok(Some(EditorState {
                 tmpfile,
                 rx,
@@ -280,6 +297,7 @@ impl App {
                 self.selected_hunk = 0;
                 self.scroll_offset = 0;
                 self.focus = FocusPanel::FileList;
+                self.dirty = true;
             }
         }
     }
@@ -340,6 +358,7 @@ impl App {
             }
         }
         self.mode = AppMode::Browsing;
+        self.dirty = true;
         captured
     }
 
@@ -397,10 +416,13 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
     let mut editor_state: Option<EditorState> = None;
 
     let result = loop {
-        // Draw
-        terminal.draw(|frame| {
-            ui::render(frame, &mut app, &highlighter);
-        })?;
+        // Draw only when state has changed
+        if app.dirty {
+            terminal.draw(|frame| {
+                ui::render(frame, &mut app, &highlighter);
+            })?;
+            app.dirty = false;
+        }
 
         // Check if editor has closed
         if let Some(ref state) = editor_state {
@@ -421,6 +443,7 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                 } else {
                     "No changes detected".to_string()
                 });
+                app.dirty = true;
             }
         }
 
@@ -504,6 +527,9 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                     }
                     _ => {}
                 },
+                Event::Resize(_, _) => {
+                    app.dirty = true;
+                }
                 _ => {}
             }
         }
@@ -753,6 +779,48 @@ mod tests {
         // Click outside the file list area
         app.handle_mouse_click(25, 2);
         assert_eq!(app.selected_file, 0); // unchanged
+    }
+
+    #[test]
+    fn test_dirty_flag_set_on_navigation() {
+        let mut app = App::new(make_test_files(), false);
+        assert!(app.dirty, "dirty should start true");
+        app.dirty = false;
+
+        app.select_next_file();
+        assert!(app.dirty, "dirty should be true after select_next_file");
+        app.dirty = false;
+
+        app.select_prev_file();
+        assert!(app.dirty, "dirty should be true after select_prev_file");
+        app.dirty = false;
+
+        app.select_next_hunk();
+        assert!(app.dirty, "dirty should be true after select_next_hunk");
+        app.dirty = false;
+
+        app.select_prev_hunk();
+        assert!(app.dirty, "dirty should be true after select_prev_hunk");
+        app.dirty = false;
+
+        app.scroll_down();
+        assert!(app.dirty, "dirty should be true after scroll_down");
+        app.dirty = false;
+
+        app.scroll_up();
+        assert!(app.dirty, "dirty should be true after scroll_up");
+        app.dirty = false;
+
+        app.toggle_focus();
+        assert!(app.dirty, "dirty should be true after toggle_focus");
+        app.dirty = false;
+
+        app.skip_current_hunk();
+        assert!(app.dirty, "dirty should be true after skip_current_hunk");
+        app.dirty = false;
+
+        app.split_current_hunk();
+        assert!(app.dirty, "dirty should be true after split_current_hunk");
     }
 
     #[test]
