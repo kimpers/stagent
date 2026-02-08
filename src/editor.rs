@@ -98,7 +98,7 @@ pub fn wait_for_pane_close(pane_id: String) -> mpsc::Receiver<()> {
 
 /// Check if a tmux pane still exists by listing all panes and searching for
 /// the given pane ID.
-fn pane_exists(pane_id: &str) -> bool {
+pub fn pane_exists(pane_id: &str) -> bool {
     let cmd = build_pane_exists_check_command();
     match std::process::Command::new(&cmd[0]).args(&cmd[1..]).output() {
         Ok(output) => {

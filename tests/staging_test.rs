@@ -2,6 +2,7 @@ mod helpers;
 
 use git2::{DiffOptions, Repository};
 use stagent::diff::{parse_diff, split_hunk};
+use stagent::git::intent_to_add_untracked;
 use stagent::staging::{reconstruct_blob, stage_hunk};
 use stagent::types::{DiffLine, FileDiff, Hunk, HunkStatus, LineKind};
 
@@ -166,6 +167,151 @@ fn test_stage_hunk_new_file() {
         .filter(|f| f.path.to_str().unwrap() == "newfile.txt")
         .collect();
     assert_eq!(staged_new.len(), 1, "New file should appear in staged diff");
+
+    drop(dir);
+}
+
+#[test]
+fn test_stage_new_file_via_intent_to_add_clears_ita_flag() {
+    let (dir, repo) = helpers::create_temp_repo();
+
+    // Create a new untracked file and mark it intent-to-add (same as `stagent -N`)
+    helpers::create_untracked_file(&repo, "newfile.txt", "brand new content\nsecond line\n");
+    intent_to_add_untracked(&repo).unwrap();
+
+    // Get the unstaged diff (intent-to-add shows content as added lines)
+    let files = get_unstaged_diff(&repo);
+    let new_file: Vec<_> = files
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "newfile.txt")
+        .collect();
+    assert_eq!(new_file.len(), 1, "Should detect intent-to-add file");
+    assert!(
+        !new_file[0].hunks.is_empty(),
+        "Intent-to-add file should have hunks"
+    );
+
+    // Stage the hunk
+    stage_hunk(&repo, new_file[0], &new_file[0].hunks[0], 0).unwrap();
+
+    // After staging, the intent-to-add flag must be cleared on the index entry.
+    // If it's still set, git CLI treats the file as "not staged" even though
+    // the blob has real content.
+    let index = repo.index().unwrap();
+    let entry = index
+        .get_path(std::path::Path::new("newfile.txt"), 0)
+        .expect("newfile.txt should be in the index after staging");
+
+    const GIT_IDXENTRY_INTENT_TO_ADD: u16 = 1 << 13;
+    assert_eq!(
+        entry.flags_extended & GIT_IDXENTRY_INTENT_TO_ADD,
+        0,
+        "Intent-to-add flag should be cleared after staging, \
+         otherwise git treats the file as not staged"
+    );
+
+    // Also verify the staged diff shows the content
+    let staged = get_staged_diff(&repo);
+    let staged_new: Vec<_> = staged
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "newfile.txt")
+        .collect();
+    assert_eq!(staged_new.len(), 1, "New file should appear in staged diff");
+
+    let staged_content: String = staged_new[0]
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.content.clone())
+        .collect();
+    assert!(
+        staged_content.contains("brand new content"),
+        "Staged diff should contain the file content, got: {}",
+        staged_content
+    );
+
+    drop(dir);
+}
+
+#[test]
+fn test_get_unstaged_diff_sees_ita_files_with_staged_changes() {
+    // Reproduce the user's exact scenario:
+    // - Some files are committed and then staged (modified)
+    // - Some files are new with intent-to-add
+    // - get_unstaged_diff should return the ITA files with hunks
+    let (dir, repo) = helpers::create_temp_repo();
+
+    // Create and commit some files, then stage modifications (like the user has)
+    helpers::commit_file(&repo, "existing.txt", "original\n");
+    helpers::modify_file(&repo, "existing.txt", "modified\n");
+    // Stage the modification
+    {
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("existing.txt"))
+            .unwrap();
+        index.write().unwrap();
+    }
+
+    // Create new untracked files and mark them intent-to-add
+    helpers::create_untracked_file(&repo, "newfile.txt", "brand new content\nsecond line\n");
+    intent_to_add_untracked(&repo).unwrap();
+
+    // Now call the LIBRARY function (same code path as main.rs)
+    let files = stagent::git::get_unstaged_diff(&repo).unwrap();
+
+    // The ITA file should appear with hunks
+    let new_file: Vec<_> = files
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "newfile.txt")
+        .collect();
+    assert!(
+        !new_file.is_empty(),
+        "ITA file should appear in unstaged diff, got files: {:?}",
+        files
+            .iter()
+            .map(|f| f.path.to_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !new_file[0].hunks.is_empty(),
+        "ITA file should have hunks so it can be staged"
+    );
+
+    drop(dir);
+}
+
+#[test]
+fn test_get_unstaged_diff_sees_ita_files_after_repo_reopen() {
+    // Simulate the case where `git add -N` was run externally before stagent
+    let (dir, repo) = helpers::create_temp_repo();
+
+    // Create new file and add intent-to-add
+    helpers::create_untracked_file(&repo, "newfile.txt", "brand new content\n");
+    intent_to_add_untracked(&repo).unwrap();
+
+    // Drop and reopen the repo (simulates running stagent as a new process)
+    drop(repo);
+    let repo = stagent::git::open_repo(dir.path()).unwrap();
+
+    let files = stagent::git::get_unstaged_diff(&repo).unwrap();
+    let new_file: Vec<_> = files
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "newfile.txt")
+        .collect();
+    assert!(
+        !new_file.is_empty(),
+        "ITA file should appear after repo reopen, got files: {:?}",
+        files
+            .iter()
+            .map(|f| f.path.to_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !new_file[0].hunks.is_empty(),
+        "ITA file should have hunks after repo reopen"
+    );
 
     drop(dir);
 }

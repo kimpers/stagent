@@ -117,11 +117,7 @@ impl Highlighter {
     /// Highlight all lines for a file at once, reusing a single `HighlightLines`
     /// instance across context/added lines for correct multi-line syntax state.
     /// Returns `Vec<Vec<Line>>` — outer = per hunk, inner = per `DiffLine`.
-    pub fn highlight_file_lines(
-        &self,
-        path: &str,
-        hunks: &[Hunk],
-    ) -> Vec<Vec<Line<'static>>> {
+    pub fn highlight_file_lines(&self, path: &str, hunks: &[Hunk]) -> Vec<Vec<Line<'static>>> {
         let syntax = self
             .syntax_set
             .find_syntax_for_file(path)
@@ -157,10 +153,7 @@ impl Highlighter {
                         .fg(Color::Red)
                         .add_modifier(Modifier::DIM)
                         .bg(theme::REMOVED_DIM_BG);
-                    hunk_lines.push(Line::from(Span::styled(
-                        diff_line.content.clone(),
-                        style,
-                    )));
+                    hunk_lines.push(Line::from(Span::styled(diff_line.content.clone(), style)));
                 } else {
                     // Context and Added lines: syntax highlight with shared state
                     let bg = match diff_line.kind {
@@ -188,8 +181,7 @@ impl Highlighter {
                                     let mut ratatui_style = Style::default().fg(fg);
 
                                     if style.font_style.contains(FontStyle::BOLD) {
-                                        ratatui_style =
-                                            ratatui_style.add_modifier(Modifier::BOLD);
+                                        ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
                                     }
                                     if style.font_style.contains(FontStyle::ITALIC) {
                                         ratatui_style =
@@ -210,10 +202,8 @@ impl Highlighter {
                                 Some(bg_color) => Style::default().bg(bg_color),
                                 None => Style::default(),
                             };
-                            hunk_lines.push(Line::from(Span::styled(
-                                diff_line.content.clone(),
-                                style,
-                            )));
+                            hunk_lines
+                                .push(Line::from(Span::styled(diff_line.content.clone(), style)));
                         }
                     }
                 }

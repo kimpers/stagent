@@ -72,6 +72,12 @@ pub fn stage_hunk(
     entry.id = blob_oid;
     entry.file_size = new_content.len() as u32;
 
+    // Clear the intent-to-add flag if present. Without this, files added
+    // via `git add -N` (intent-to-add) would retain the flag after staging,
+    // causing git to treat them as not actually staged.
+    const GIT_IDXENTRY_INTENT_TO_ADD: u16 = 1 << 13;
+    entry.flags_extended &= !GIT_IDXENTRY_INTENT_TO_ADD;
+
     index.add(&entry).context("Failed to update index entry")?;
     index.write().context("Failed to write index")?;
 

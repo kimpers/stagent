@@ -28,9 +28,9 @@ pub struct Cli {
     #[arg(short = 'C', long = "context-lines", default_value_t = stagent::feedback::DEFAULT_CONTEXT_LINES)]
     context_lines: usize,
 
-    /// Add untracked files with intent-to-add so they appear in the diff
-    #[arg(short = 'N', long = "intent-to-add")]
-    intent_to_add: bool,
+    /// Spawn stagent in a tmux split pane and wait for completion
+    #[arg(long)]
+    spawn: bool,
 }
 
 fn main() -> Result<()> {
@@ -41,13 +41,24 @@ fn main() -> Result<()> {
         bail!("stagent requires tmux. Please run inside a tmux session.");
     }
 
+    // Handle --spawn mode: spawn stagent in a split and wait for completion
+    if cli.spawn {
+        let opts = stagent::spawn::SpawnOptions {
+            output: cli.output.clone(),
+            files: cli.files.clone(),
+            theme: cli.theme.clone(),
+            context_lines: cli.context_lines,
+            no_stage: cli.no_stage,
+        };
+        return stagent::spawn::spawn_in_split(&opts);
+    }
+
     // Open repo
     let repo = stagent::git::open_repo(".")?;
 
-    // Intent-to-add untracked files if requested
-    if cli.intent_to_add {
-        stagent::git::intent_to_add_untracked(&repo)?;
-    }
+    // Add untracked files with intent-to-add so they appear in the diff
+    // and can be staged hunk-by-hunk.
+    stagent::git::intent_to_add_untracked(&repo)?;
 
     // Get unstaged diff
     let mut files = stagent::git::get_unstaged_diff(&repo)?;
