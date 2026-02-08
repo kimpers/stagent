@@ -51,5 +51,4 @@ The feedback file contains unified diff format for edits and positioned comments
 ## Notes
 
 - Requires tmux (stagent is a TUI that runs inside tmux)
-- Only works with unstaged changes (use `git add -N` for new files)
 - The `--spawn` flag handles opening the split and waiting for completion

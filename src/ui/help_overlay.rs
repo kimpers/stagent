@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 /// Render a centered help overlay listing all keybindings.
 pub fn render(frame: &mut Frame, area: Rect) {

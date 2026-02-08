@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use git2::Repository;
 use std::path::Path;
 
@@ -107,23 +107,22 @@ fn get_index_content(repo: &Repository, path: &Path) -> Result<String> {
         Ok(content)
     } else {
         // Try HEAD tree
-        if let Ok(head) = repo.head() {
-            if let Ok(tree) = head.peel_to_tree() {
-                if let Ok(entry) = tree.get_path(Path::new(path_str)) {
-                    let obj = entry
-                        .to_object(repo)
-                        .context("Failed to resolve tree entry")?;
-                    if let Some(blob) = obj.as_blob() {
-                        if blob.content().contains(&0) {
-                            bail!(
-                                "File appears to be binary (contains null bytes): {:?}",
-                                path
-                            );
-                        }
-                        return String::from_utf8(blob.content().to_vec())
-                            .with_context(|| format!("File is not valid UTF-8: {:?}", path));
-                    }
+        if let Ok(head) = repo.head()
+            && let Ok(tree) = head.peel_to_tree()
+            && let Ok(entry) = tree.get_path(Path::new(path_str))
+        {
+            let obj = entry
+                .to_object(repo)
+                .context("Failed to resolve tree entry")?;
+            if let Some(blob) = obj.as_blob() {
+                if blob.content().contains(&0) {
+                    bail!(
+                        "File appears to be binary (contains null bytes): {:?}",
+                        path
+                    );
                 }
+                return String::from_utf8(blob.content().to_vec())
+                    .with_context(|| format!("File is not valid UTF-8: {:?}", path));
             }
         }
         // New file - return empty

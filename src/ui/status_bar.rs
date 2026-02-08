@@ -1,7 +1,7 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::types::{AppMode, FileDiff, HunkStatus};
 use crate::ui::theme;

@@ -1,6 +1,6 @@
 //! Tests for the spawn module (--spawn flag functionality).
 
-use stagent::spawn::{build_spawn_command, SpawnOptions};
+use stagent::spawn::{SpawnOptions, build_spawn_command};
 use std::path::PathBuf;
 
 fn default_opts() -> SpawnOptions {

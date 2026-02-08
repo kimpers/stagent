@@ -106,27 +106,30 @@ fn test_editor_env_precedence() {
     let orig_visual = std::env::var("VISUAL").ok();
     let orig_editor = std::env::var("EDITOR").ok();
 
-    // Set both — VISUAL should win
-    std::env::set_var("VISUAL", "code");
-    std::env::set_var("EDITOR", "nano");
-    assert_eq!(get_editor(), "code");
+    // SAFETY: This test is single-threaded and we restore the env vars after
+    unsafe {
+        // Set both — VISUAL should win
+        std::env::set_var("VISUAL", "code");
+        std::env::set_var("EDITOR", "nano");
+        assert_eq!(get_editor(), "code");
 
-    // Remove VISUAL — EDITOR should win
-    std::env::remove_var("VISUAL");
-    assert_eq!(get_editor(), "nano");
+        // Remove VISUAL — EDITOR should win
+        std::env::remove_var("VISUAL");
+        assert_eq!(get_editor(), "nano");
 
-    // Remove both — should fall back to vi
-    std::env::remove_var("EDITOR");
-    assert_eq!(get_editor(), "vi");
+        // Remove both — should fall back to vi
+        std::env::remove_var("EDITOR");
+        assert_eq!(get_editor(), "vi");
 
-    // Restore originals
-    match orig_visual {
-        Some(v) => std::env::set_var("VISUAL", v),
-        None => std::env::remove_var("VISUAL"),
-    }
-    match orig_editor {
-        Some(v) => std::env::set_var("EDITOR", v),
-        None => std::env::remove_var("EDITOR"),
+        // Restore originals
+        match orig_visual {
+            Some(v) => std::env::set_var("VISUAL", v),
+            None => std::env::remove_var("VISUAL"),
+        }
+        match orig_editor {
+            Some(v) => std::env::set_var("EDITOR", v),
+            None => std::env::remove_var("EDITOR"),
+        }
     }
 }
 
@@ -390,8 +393,11 @@ fn test_tmux_split_opens_and_closes() {
     let tmpfile = tempfile::NamedTempFile::new().expect("create tmp");
     let path = tmpfile.path().to_str().unwrap().to_string();
 
-    // Override editor to something that exits immediately
-    std::env::set_var("VISUAL", "true"); // `true` exits 0 immediately
+    // SAFETY: This test is single-threaded
+    unsafe {
+        // Override editor to something that exits immediately
+        std::env::set_var("VISUAL", "true"); // `true` exits 0 immediately
+    }
 
     let pane_id = open_editor(&path).expect("should open tmux split");
     assert!(
@@ -405,7 +411,10 @@ fn test_tmux_split_opens_and_closes() {
     rx.recv_timeout(std::time::Duration::from_secs(10))
         .expect("pane should close within 10s");
 
-    std::env::remove_var("VISUAL");
+    // SAFETY: This test is single-threaded
+    unsafe {
+        std::env::remove_var("VISUAL");
+    }
 }
 
 #[test]
@@ -416,7 +425,10 @@ fn test_tmux_pane_id_captured() {
     let tmpfile = tempfile::NamedTempFile::new().expect("create tmp");
     let path = tmpfile.path().to_str().unwrap().to_string();
 
-    std::env::set_var("VISUAL", "true");
+    // SAFETY: This test is single-threaded
+    unsafe {
+        std::env::set_var("VISUAL", "true");
+    }
 
     let pane_id = open_editor(&path).expect("should open tmux split");
     assert!(!pane_id.is_empty(), "pane_id should not be empty");
@@ -427,5 +439,8 @@ fn test_tmux_pane_id_captured() {
         pane_id
     );
 
-    std::env::remove_var("VISUAL");
+    // SAFETY: This test is single-threaded
+    unsafe {
+        std::env::remove_var("VISUAL");
+    }
 }

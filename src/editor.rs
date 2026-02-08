@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use similar::TextDiff;
 use std::io::Write;
 use std::sync::mpsc;

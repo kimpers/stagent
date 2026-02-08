@@ -95,12 +95,12 @@ fn format_comment_with_context(output: &mut String, fb: &HunkFeedback, context_c
         let ctx_end = (*pos + context_count).min(n);
 
         // Try to merge with the last region if overlapping
-        if let Some(last) = regions.last_mut() {
-            if ctx_start <= last.end {
-                last.end = last.end.max(ctx_end);
-                last.comments.push((*pos, text.clone()));
-                continue;
-            }
+        if let Some(last) = regions.last_mut()
+            && ctx_start <= last.end
+        {
+            last.end = last.end.max(ctx_end);
+            last.comments.push((*pos, text.clone()));
+            continue;
         }
 
         regions.push(CommentRegion {

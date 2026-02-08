@@ -328,17 +328,17 @@ impl App {
         let file_idx = self.selected_file;
         let hunk_idx = self.selected_hunk;
 
-        if let Some(file) = self.files.get(file_idx) {
-            if let Some(hunk) = file.hunks.get(hunk_idx) {
-                let sub_hunks = diff::split_hunk(hunk);
-                if sub_hunks.len() > 1 {
-                    let file = &mut self.files[file_idx];
-                    file.hunks.splice(hunk_idx..=hunk_idx, sub_hunks);
-                    self.message = Some("Hunk split".to_string());
-                    self.highlight_cache = None;
-                } else {
-                    self.message = Some("Cannot split hunk further".to_string());
-                }
+        if let Some(file) = self.files.get(file_idx)
+            && let Some(hunk) = file.hunks.get(hunk_idx)
+        {
+            let sub_hunks = diff::split_hunk(hunk);
+            if sub_hunks.len() > 1 {
+                let file = &mut self.files[file_idx];
+                file.hunks.splice(hunk_idx..=hunk_idx, sub_hunks);
+                self.message = Some("Hunk split".to_string());
+                self.highlight_cache = None;
+            } else {
+                self.message = Some("Cannot split hunk further".to_string());
             }
         }
         self.dirty = true;
@@ -514,7 +514,7 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
 
     let mut editor_state: Option<EditorState> = None;
 
-    let result = loop {
+    loop {
         // Draw only when state has changed
         if app.dirty {
             terminal.draw(|frame| {
@@ -524,26 +524,26 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
         }
 
         // Check if editor has closed
-        if let Some(ref state) = editor_state {
-            if state.rx.try_recv().is_ok() {
-                // Take ownership to process
-                let state = editor_state.take().unwrap();
-                let captured = app.flush_pending_editor_state(
-                    state.tmpfile.path(),
-                    state.is_comment,
-                    &state.original_content,
-                );
-                app.message = Some(if captured {
-                    if state.is_comment {
-                        "Comment captured".to_string()
-                    } else {
-                        "Edit captured".to_string()
-                    }
+        if let Some(ref state) = editor_state
+            && state.rx.try_recv().is_ok()
+        {
+            // Take ownership to process
+            let state = editor_state.take().unwrap();
+            let captured = app.flush_pending_editor_state(
+                state.tmpfile.path(),
+                state.is_comment,
+                &state.original_content,
+            );
+            app.message = Some(if captured {
+                if state.is_comment {
+                    "Comment captured".to_string()
                 } else {
-                    "No changes detected".to_string()
-                });
-                app.dirty = true;
-            }
+                    "Edit captured".to_string()
+                }
+            } else {
+                "No changes detected".to_string()
+            });
+            app.dirty = true;
         }
 
         // Handle events
@@ -697,10 +697,8 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                 _ => {}
             }
         }
-    };
-
+    }
     // _guard will restore terminal on drop
-    result
 }
 
 #[cfg(test)]
@@ -1364,7 +1362,7 @@ mod tests {
         assert_eq!(app.mode, AppMode::Help);
         // Pressing 'y' in Help mode should dismiss help, NOT stage a hunk
         app.mode = AppMode::Browsing; // This is what the event loop does
-                                      // Hunk status should remain Pending (not Staged)
+        // Hunk status should remain Pending (not Staged)
         assert_eq!(app.files[0].hunks[0].status, HunkStatus::Pending);
     }
 

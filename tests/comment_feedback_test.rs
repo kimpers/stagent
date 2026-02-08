@@ -360,15 +360,19 @@ fn test_positioned_comments_in_hunk() {
 
     // First comment after the +new_a line (hunk line index 3)
     assert_eq!(fb.comment_positions[0].0, 3, "First comment at pos 3");
-    assert!(fb.comment_positions[0]
-        .1
-        .contains("First change looks good"));
+    assert!(
+        fb.comment_positions[0]
+            .1
+            .contains("First change looks good")
+    );
 
     // Second comment after line3 (hunk line index 4)
     assert_eq!(fb.comment_positions[1].0, 4, "Second comment at pos 4");
-    assert!(fb.comment_positions[1]
-        .1
-        .contains("But this context needs review"));
+    assert!(
+        fb.comment_positions[1]
+            .1
+            .contains("But this context needs review")
+    );
 
     // Verify format output has inline comments
     let output = stagent::feedback::format_feedback(&[fb], 2);

@@ -16,7 +16,10 @@ fn test_pane_close_detected_after_process_exits() {
     // Override editor to `true` which exits immediately
     let orig_visual = std::env::var("VISUAL").ok();
     let orig_editor = std::env::var("EDITOR").ok();
-    std::env::set_var("VISUAL", "true");
+    // SAFETY: This test is single-threaded and we restore env vars after
+    unsafe {
+        std::env::set_var("VISUAL", "true");
+    }
 
     let tmpfile = tempfile::NamedTempFile::new().expect("create tmpfile");
     let path = tmpfile.path().to_str().unwrap().to_string();
@@ -42,12 +45,15 @@ fn test_pane_close_detected_after_process_exits() {
     );
 
     // Restore env
-    match orig_visual {
-        Some(v) => std::env::set_var("VISUAL", v),
-        None => std::env::remove_var("VISUAL"),
-    }
-    match orig_editor {
-        Some(v) => std::env::set_var("EDITOR", v),
-        None => std::env::remove_var("EDITOR"),
+    // SAFETY: This test is single-threaded
+    unsafe {
+        match orig_visual {
+            Some(v) => std::env::set_var("VISUAL", v),
+            None => std::env::remove_var("VISUAL"),
+        }
+        match orig_editor {
+            Some(v) => std::env::set_var("EDITOR", v),
+            None => std::env::remove_var("EDITOR"),
+        }
     }
 }

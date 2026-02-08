@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
-use ratatui::Frame;
 
 use crate::types::{DeltaStatus, FileDiff, HunkStatus};
 use crate::ui::theme;

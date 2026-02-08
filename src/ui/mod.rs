@@ -4,8 +4,8 @@ pub mod help_overlay;
 pub mod status_bar;
 pub mod theme;
 
-use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
 
 use crate::app::App;
 use crate::highlight::Highlighter;
@@ -54,12 +54,10 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
         Some((idx, _)) => *idx != app.selected_file,
         None => true,
     };
-    if needs_rebuild {
-        if let Some(file) = app.current_file() {
-            let path_str = file.path.to_string_lossy().to_string();
-            let lines = highlighter.highlight_file_lines(&path_str, &file.hunks);
-            app.highlight_cache = Some((app.selected_file, lines));
-        }
+    if needs_rebuild && let Some(file) = app.current_file() {
+        let path_str = file.path.to_string_lossy().to_string();
+        let lines = highlighter.highlight_file_lines(&path_str, &file.hunks);
+        app.highlight_cache = Some((app.selected_file, lines));
     }
     let cached = app.highlight_cache.as_ref().map(|(_, lines)| lines);
 

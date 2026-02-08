@@ -4,7 +4,7 @@
 //! tools) to launch stagent in a new tmux split, wait for the user to complete
 //! their review, and then read the feedback output.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
