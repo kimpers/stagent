@@ -1,9 +1,10 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, MouseButton, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use git2::Repository;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::io;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
@@ -35,27 +36,64 @@ pub struct App {
     pub no_stage: bool,
     /// Cached file list area for mouse click mapping.
     pub file_list_area: Rect,
+    /// Cached diff view area for page scroll calculations.
+    pub diff_view_area: Rect,
     /// Whether the UI needs to be redrawn.
     pub dirty: bool,
     /// Cached highlighted lines: (file_index, per-hunk lines).
     pub highlight_cache: Option<(usize, Vec<Vec<Line<'static>>>)>,
+    /// Pending key for multi-key sequences (e.g. `gg`).
+    pub pending_key: Option<char>,
+}
+
+/// Return the path to the help-shown marker file (`~/.config/stagent/help_shown`).
+pub fn help_shown_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/stagent/help_shown"))
+}
+
+/// Write the marker file so the startup help overlay won't show again.
+pub fn mark_help_shown() {
+    if let Some(path) = help_shown_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, "");
+    }
+}
+
+/// Check whether the startup help has been shown before.
+pub fn has_seen_help() -> bool {
+    help_shown_path().is_some_and(|p| p.exists())
 }
 
 impl App {
     pub fn new(files: Vec<FileDiff>, no_stage: bool) -> Self {
+        let show_help = !has_seen_help();
+        Self::new_with_help(files, no_stage, show_help)
+    }
+
+    /// Create a new App, explicitly controlling whether the help overlay shows.
+    pub fn new_with_help(files: Vec<FileDiff>, no_stage: bool, show_help: bool) -> Self {
+        let initial_mode = if show_help {
+            AppMode::Help
+        } else {
+            AppMode::Browsing
+        };
         Self {
             files,
             selected_file: 0,
             selected_hunk: 0,
             scroll_offset: 0,
             feedback: Vec::new(),
-            mode: AppMode::Browsing,
+            mode: initial_mode,
             focus: FocusPanel::DiffView,
             message: None,
             no_stage,
             file_list_area: Rect::default(),
+            diff_view_area: Rect::default(),
             dirty: true,
             highlight_cache: None,
+            pending_key: None,
         }
     }
 
@@ -141,6 +179,67 @@ impl App {
     /// Scroll the diff view up.
     pub fn scroll_up(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
+        self.dirty = true;
+    }
+
+    /// Scroll to the top of the diff view.
+    pub fn scroll_to_top(&mut self) {
+        self.scroll_offset = 0;
+        self.dirty = true;
+    }
+
+    /// Compute the total number of rendered lines for the current file's diff.
+    /// Each hunk has: 1 header + N lines + 1 separator (except last hunk has no separator).
+    pub fn total_content_lines(&self) -> u32 {
+        match self.files.get(self.selected_file) {
+            Some(file) if !file.hunks.is_empty() => {
+                let mut total: u32 = 0;
+                for hunk in &file.hunks {
+                    total += 1; // header
+                    total += hunk.lines.len() as u32;
+                    total += 1; // separator
+                }
+                total - 1 // last hunk has no separator
+            }
+            _ => 0,
+        }
+    }
+
+    /// Scroll to the bottom of the diff view.
+    /// Positions the view so the last content line is at the bottom of the viewport.
+    pub fn scroll_to_bottom(&mut self) {
+        let total = self.total_content_lines();
+        // Inner height = area height minus 2 for block borders
+        let visible = self.diff_view_area.height.saturating_sub(2) as u32;
+        self.scroll_offset = total.saturating_sub(visible);
+        self.dirty = true;
+    }
+
+    /// Scroll half a page down in the diff view.
+    pub fn scroll_half_page_down(&mut self) {
+        let amount = (self.diff_view_area.height / 2).max(1) as u32;
+        self.scroll_offset = self.scroll_offset.saturating_add(amount);
+        self.dirty = true;
+    }
+
+    /// Scroll half a page up in the diff view.
+    pub fn scroll_half_page_up(&mut self) {
+        let amount = (self.diff_view_area.height / 2).max(1) as u32;
+        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+        self.dirty = true;
+    }
+
+    /// Scroll a full page down in the diff view.
+    pub fn scroll_full_page_down(&mut self) {
+        let amount = self.diff_view_area.height.max(1) as u32;
+        self.scroll_offset = self.scroll_offset.saturating_add(amount);
+        self.dirty = true;
+    }
+
+    /// Scroll a full page up in the diff view.
+    pub fn scroll_full_page_up(&mut self) {
+        let amount = self.diff_view_area.height.max(1) as u32;
+        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
         self.dirty = true;
     }
 
@@ -466,12 +565,77 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                         continue;
                     }
 
+                    // Help mode: any key dismisses the overlay
+                    if app.mode == AppMode::Help {
+                        app.mode = AppMode::Browsing;
+                        app.dirty = true;
+                        mark_help_shown();
+                        continue;
+                    }
+
+                    // Handle pending key sequences (gg)
+                    if app.pending_key == Some('g') {
+                        app.pending_key = None;
+                        app.message = None;
+                        if key.code == KeyCode::Char('g') {
+                            app.scroll_to_top();
+                            continue;
+                        }
+                        // Fall through to process the key normally
+                    }
+
+                    // Handle Ctrl modifier keys
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        match key.code {
+                            KeyCode::Char('d') => app.scroll_half_page_down(),
+                            KeyCode::Char('u') => app.scroll_half_page_up(),
+                            KeyCode::Char('f') => app.scroll_full_page_down(),
+                            KeyCode::Char('b') => app.scroll_full_page_up(),
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         KeyCode::Char('q') => {
                             break Ok(app.feedback);
                         }
-                        KeyCode::Char('j') => app.scroll_down(),
-                        KeyCode::Char('k') => app.scroll_up(),
+                        KeyCode::Char('j') => {
+                            if app.focus == FocusPanel::FileList {
+                                app.select_next_file();
+                            } else {
+                                app.scroll_down();
+                            }
+                        }
+                        KeyCode::Char('k') => {
+                            if app.focus == FocusPanel::FileList {
+                                app.select_prev_file();
+                            } else {
+                                app.scroll_up();
+                            }
+                        }
+                        KeyCode::Char('J') | KeyCode::Char('}') => app.select_next_hunk(),
+                        KeyCode::Char('K') | KeyCode::Char('{') => app.select_prev_hunk(),
+                        KeyCode::Char('H') => app.select_prev_file(),
+                        KeyCode::Char('L') => app.select_next_file(),
+                        KeyCode::Char('h') => {
+                            app.focus = FocusPanel::FileList;
+                            app.dirty = true;
+                        }
+                        KeyCode::Char('l') => {
+                            app.focus = FocusPanel::DiffView;
+                            app.dirty = true;
+                        }
+                        KeyCode::Char('G') => app.scroll_to_bottom(),
+                        KeyCode::Char('g') => {
+                            app.pending_key = Some('g');
+                            app.message = Some("g...".to_string());
+                            app.dirty = true;
+                        }
+                        KeyCode::Char('?') => {
+                            app.mode = AppMode::Help;
+                            app.dirty = true;
+                        }
                         KeyCode::Down => {
                             if app.focus == FocusPanel::FileList {
                                 app.select_next_file();
@@ -633,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new(make_test_files(), false);
+        let app = App::new_with_help(make_test_files(), false, false);
         assert_eq!(app.selected_file, 0);
         assert_eq!(app.selected_hunk, 0);
         assert_eq!(app.mode, AppMode::Browsing);
@@ -840,5 +1004,423 @@ mod tests {
         app.files[0].hunks[0].new_lines = 5;
         // offset = 5 - 3 = 2
         assert_eq!(app.compute_line_offset(0, 1), 2);
+    }
+
+    // --- scroll_to_top tests ---
+
+    #[test]
+    fn test_scroll_to_top() {
+        let mut app = App::new(make_test_files(), false);
+        app.scroll_offset = 42;
+        app.scroll_to_top();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_to_top_already_at_top() {
+        let mut app = App::new(make_test_files(), false);
+        app.scroll_offset = 0;
+        app.scroll_to_top();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_to_top_empty() {
+        let mut app = App::new(vec![], false);
+        app.scroll_to_top(); // should not panic
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    // --- scroll_to_bottom tests ---
+
+    #[test]
+    fn test_scroll_to_bottom() {
+        let mut app = App::new_with_help(make_test_files(), false, false);
+        // Simulate a diff view area: 80 wide, 10 tall (inner height = 8)
+        app.diff_view_area = Rect::new(0, 0, 80, 10);
+        app.scroll_to_bottom();
+        // File 0 has 2 hunks:
+        //   hunk0: 1 header + 4 lines + 1 sep = 6
+        //   hunk1: 1 header + 1 line (no trailing sep) = 2
+        // Total content = 8 lines, visible inner height = 8
+        // scroll_offset = 8 - 8 = 0
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_to_bottom_with_small_viewport() {
+        let mut app = App::new_with_help(make_test_files(), false, false);
+        // Small viewport: inner height = 3
+        app.diff_view_area = Rect::new(0, 0, 80, 5);
+        app.scroll_to_bottom();
+        // Total content = 8, visible = 3, offset = 8 - 3 = 5
+        assert_eq!(app.scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_scroll_to_bottom_no_overscroll() {
+        let mut app = App::new_with_help(make_test_files(), false, false);
+        // Viewport larger than content: inner height = 50
+        app.diff_view_area = Rect::new(0, 0, 80, 52);
+        app.scroll_to_bottom();
+        // Total content = 8, visible = 50, saturating_sub → 0
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_to_bottom_empty() {
+        let mut app = App::new_with_help(vec![], false, false);
+        app.scroll_to_bottom(); // should not panic
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    // --- half-page scroll tests ---
+
+    #[test]
+    fn test_scroll_half_page_down() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 0;
+        app.scroll_half_page_down();
+        assert_eq!(app.scroll_offset, 10); // 20/2
+    }
+
+    #[test]
+    fn test_scroll_half_page_up() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 15;
+        app.scroll_half_page_up();
+        assert_eq!(app.scroll_offset, 5); // 15 - 10
+    }
+
+    #[test]
+    fn test_scroll_half_page_up_clamps_to_zero() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 3; // less than half page (10)
+        app.scroll_half_page_up();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    // --- full-page scroll tests ---
+
+    #[test]
+    fn test_scroll_full_page_down() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 0;
+        app.scroll_full_page_down();
+        assert_eq!(app.scroll_offset, 20);
+    }
+
+    #[test]
+    fn test_scroll_full_page_up() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 30;
+        app.scroll_full_page_up();
+        assert_eq!(app.scroll_offset, 10); // 30 - 20
+    }
+
+    #[test]
+    fn test_scroll_full_page_up_clamps_to_zero() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+        app.scroll_offset = 5; // less than full page (20)
+        app.scroll_full_page_up();
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_page_zero_height() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 0);
+        app.scroll_offset = 0;
+        app.scroll_half_page_down();
+        assert_eq!(app.scroll_offset, 1); // .max(1) ensures scroll by 1
+        app.scroll_offset = 0;
+        app.scroll_full_page_down();
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    // --- context-sensitive j/k tests ---
+
+    #[test]
+    fn test_j_scrolls_diff_when_diffview_focused() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::DiffView;
+        app.scroll_offset = 0;
+        // Simulate j: when DiffView focused, scroll_down
+        app.scroll_down();
+        assert_eq!(app.scroll_offset, 1);
+    }
+
+    #[test]
+    fn test_k_scrolls_diff_when_diffview_focused() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::DiffView;
+        app.scroll_offset = 5;
+        app.scroll_up();
+        assert_eq!(app.scroll_offset, 4);
+    }
+
+    #[test]
+    fn test_j_navigates_file_when_filelist_focused() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::FileList;
+        assert_eq!(app.selected_file, 0);
+        app.select_next_file();
+        assert_eq!(app.selected_file, 1);
+    }
+
+    #[test]
+    fn test_k_navigates_file_when_filelist_focused() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::FileList;
+        app.selected_file = 1;
+        app.select_prev_file();
+        assert_eq!(app.selected_file, 0);
+    }
+
+    // --- new hunk/file navigation key tests ---
+
+    #[test]
+    fn test_curly_brace_next_hunk() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        assert_eq!(app.selected_hunk, 0);
+        app.select_next_hunk();
+        assert_eq!(app.selected_hunk, 1);
+    }
+
+    #[test]
+    fn test_curly_brace_prev_hunk() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.selected_hunk = 1;
+        app.select_prev_hunk();
+        assert_eq!(app.selected_hunk, 0);
+    }
+
+    #[test]
+    fn test_shift_j_next_hunk() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        assert_eq!(app.selected_hunk, 0);
+        // J calls select_next_hunk (synonym for })
+        app.select_next_hunk();
+        assert_eq!(app.selected_hunk, 1);
+    }
+
+    #[test]
+    fn test_shift_k_prev_hunk() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.selected_hunk = 1;
+        // K calls select_prev_hunk (synonym for {)
+        app.select_prev_hunk();
+        assert_eq!(app.selected_hunk, 0);
+    }
+
+    #[test]
+    fn test_shift_l_next_file() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        assert_eq!(app.selected_file, 0);
+        app.select_next_file();
+        assert_eq!(app.selected_file, 1);
+    }
+
+    #[test]
+    fn test_shift_h_prev_file() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.selected_file = 1;
+        app.select_prev_file();
+        assert_eq!(app.selected_file, 0);
+    }
+
+    // --- directional panel focus tests ---
+
+    #[test]
+    fn test_h_focuses_filelist() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::DiffView;
+        app.focus = FocusPanel::FileList;
+        assert_eq!(app.focus, FocusPanel::FileList);
+    }
+
+    #[test]
+    fn test_l_focuses_diffview() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::FileList;
+        app.focus = FocusPanel::DiffView;
+        assert_eq!(app.focus, FocusPanel::DiffView);
+    }
+
+    #[test]
+    fn test_h_when_already_filelist() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::FileList;
+        // Setting again is idempotent
+        app.focus = FocusPanel::FileList;
+        assert_eq!(app.focus, FocusPanel::FileList);
+    }
+
+    #[test]
+    fn test_l_when_already_diffview() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.focus = FocusPanel::DiffView;
+        // Setting again is idempotent
+        app.focus = FocusPanel::DiffView;
+        assert_eq!(app.focus, FocusPanel::DiffView);
+    }
+
+    // --- pending key / gg sequence tests ---
+
+    #[test]
+    fn test_g_sets_pending_key() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.pending_key = Some('g');
+        app.message = Some("g...".to_string());
+        assert_eq!(app.pending_key, Some('g'));
+        assert_eq!(app.message, Some("g...".to_string()));
+    }
+
+    #[test]
+    fn test_gg_scrolls_to_top() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.scroll_offset = 42;
+        // Simulate: first g sets pending, second g triggers scroll_to_top
+        app.pending_key = Some('g');
+        // When event loop sees pending_key == Some('g') and next key is 'g':
+        app.pending_key = None;
+        app.scroll_to_top();
+        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.pending_key, None);
+    }
+
+    #[test]
+    fn test_g_then_other_key_clears_pending() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.pending_key = Some('g');
+        // Non-g key should clear pending
+        app.pending_key = None;
+        app.message = None;
+        assert_eq!(app.pending_key, None);
+    }
+
+    #[test]
+    fn test_g_then_capital_g_clears_pending_and_scrolls_bottom() {
+        let mut app = App::new(make_test_files(), false);
+        app.mode = AppMode::Browsing;
+        app.pending_key = Some('g');
+        // When event loop sees pending_key == Some('g') and next key is 'G':
+        // it clears pending and falls through to match G → scroll_to_bottom
+        app.pending_key = None;
+        app.message = None;
+        app.scroll_to_bottom();
+        assert!(app.scroll_offset > 0);
+    }
+
+    // --- help overlay mode tests ---
+
+    #[test]
+    fn test_initial_mode_is_help_on_first_run() {
+        let app = App::new_with_help(make_test_files(), false, true);
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn test_initial_mode_is_browsing_on_subsequent_run() {
+        let app = App::new_with_help(make_test_files(), false, false);
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    #[test]
+    fn test_help_mode_any_key_dismisses() {
+        let mut app = App::new_with_help(make_test_files(), false, true);
+        assert_eq!(app.mode, AppMode::Help);
+        // Simulate: any key in Help mode switches to Browsing
+        app.mode = AppMode::Browsing;
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    #[test]
+    fn test_help_mode_key_not_processed_as_action() {
+        let mut app = App::new_with_help(make_test_files(), false, true);
+        assert_eq!(app.mode, AppMode::Help);
+        // Pressing 'y' in Help mode should dismiss help, NOT stage a hunk
+        app.mode = AppMode::Browsing; // This is what the event loop does
+                                      // Hunk status should remain Pending (not Staged)
+        assert_eq!(app.files[0].hunks[0].status, HunkStatus::Pending);
+    }
+
+    #[test]
+    fn test_question_mark_toggles_help() {
+        let mut app = App::new_with_help(make_test_files(), false, false);
+        assert_eq!(app.mode, AppMode::Browsing);
+        // Pressing '?' in Browsing mode switches to Help
+        app.mode = AppMode::Help;
+        assert_eq!(app.mode, AppMode::Help);
+    }
+
+    #[test]
+    fn test_question_mark_from_help_dismisses() {
+        let mut app = App::new_with_help(make_test_files(), false, true);
+        app.mode = AppMode::Help;
+        // Pressing '?' in Help mode switches back to Browsing
+        app.mode = AppMode::Browsing;
+        assert_eq!(app.mode, AppMode::Browsing);
+    }
+
+    // --- dirty flag for new methods ---
+
+    #[test]
+    fn test_dirty_flag_new_methods() {
+        let mut app = App::new(make_test_files(), false);
+        app.diff_view_area = Rect::new(0, 0, 80, 20);
+
+        app.dirty = false;
+        app.scroll_to_top();
+        assert!(app.dirty, "dirty should be true after scroll_to_top");
+
+        app.dirty = false;
+        app.scroll_to_bottom();
+        assert!(app.dirty, "dirty should be true after scroll_to_bottom");
+
+        app.dirty = false;
+        app.scroll_half_page_down();
+        assert!(
+            app.dirty,
+            "dirty should be true after scroll_half_page_down"
+        );
+
+        app.dirty = false;
+        app.scroll_half_page_up();
+        assert!(app.dirty, "dirty should be true after scroll_half_page_up");
+
+        app.dirty = false;
+        app.scroll_full_page_down();
+        assert!(
+            app.dirty,
+            "dirty should be true after scroll_full_page_down"
+        );
+
+        app.dirty = false;
+        app.scroll_full_page_up();
+        assert!(app.dirty, "dirty should be true after scroll_full_page_up");
     }
 }

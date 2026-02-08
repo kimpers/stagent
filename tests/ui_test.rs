@@ -6,6 +6,11 @@ use stagent::highlight::Highlighter;
 use stagent::types::*;
 use stagent::ui;
 
+/// Helper to set app to Browsing mode (since App::new starts in Help mode).
+fn set_browsing(app: &mut App) {
+    app.mode = AppMode::Browsing;
+}
+
 fn make_test_files() -> Vec<FileDiff> {
     vec![
         FileDiff {
@@ -104,6 +109,7 @@ fn render_to_string(width: u16, height: u16, app: &mut App) -> String {
 #[test]
 fn test_file_list_render() {
     let mut app = App::new(make_test_files(), false);
+    set_browsing(&mut app);
     let output = render_to_string(80, 24, &mut app);
 
     // File names should appear in the rendered output
@@ -122,6 +128,7 @@ fn test_file_list_render() {
 #[test]
 fn test_diff_view_render() {
     let mut app = App::new(make_test_files(), false);
+    set_browsing(&mut app);
     let output = render_to_string(100, 30, &mut app);
 
     // The diff view should show the hunk header
@@ -147,6 +154,7 @@ fn test_diff_view_render() {
 #[test]
 fn test_status_bar_render() {
     let mut app = App::new(make_test_files(), false);
+    set_browsing(&mut app);
     let output = render_to_string(120, 24, &mut app);
 
     // Status bar should contain keybinding hints
@@ -175,6 +183,7 @@ fn test_status_bar_render() {
 #[test]
 fn test_layout_proportions() {
     let mut app = App::new(make_test_files(), false);
+    set_browsing(&mut app);
 
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -203,5 +212,60 @@ fn test_layout_proportions() {
         diff_width >= 70 && diff_width <= 80,
         "Diff view width {} should be ~75% of 100",
         diff_width
+    );
+}
+
+// --- Help overlay integration tests ---
+
+#[test]
+fn test_help_overlay_render() {
+    let mut app = App::new_with_help(make_test_files(), false, true);
+    assert_eq!(app.mode, AppMode::Help);
+    let output = render_to_string(100, 30, &mut app);
+
+    // Overlay should contain keybinding info
+    assert!(
+        output.contains("Navigation"),
+        "Expected 'Navigation' in help overlay:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Stage hunk"),
+        "Expected 'Stage hunk' in help overlay:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_help_overlay_dismissed_shows_normal_ui() {
+    let mut app = App::new_with_help(make_test_files(), false, true);
+    // Dismiss help
+    app.mode = AppMode::Browsing;
+    let output = render_to_string(100, 30, &mut app);
+
+    // Normal UI should be visible: diff hunk header
+    assert!(
+        output.contains("@@ -1,3 +1,4 @@"),
+        "Expected hunk header after dismissing help:\n{}",
+        output
+    );
+    // Help overlay text should not be present
+    assert!(
+        !output.contains("Press any key to start"),
+        "Help overlay should not be visible after dismissing:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_status_bar_shows_help_hint() {
+    let mut app = App::new(make_test_files(), false);
+    set_browsing(&mut app);
+    let output = render_to_string(120, 24, &mut app);
+
+    assert!(
+        output.contains("?:help"),
+        "Expected '?:help' in status bar:\n{}",
+        output
     );
 }

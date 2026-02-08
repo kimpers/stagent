@@ -86,6 +86,7 @@ pub enum HunkStatus {
 pub enum AppMode {
     Browsing,
     WaitingForEditor,
+    Help,
 }
 
 /// Which panel is focused in the TUI.

@@ -1,5 +1,6 @@
 pub mod diff_view;
 pub mod file_list;
+pub mod help_overlay;
 pub mod status_bar;
 pub mod theme;
 
@@ -8,6 +9,7 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::highlight::Highlighter;
+use crate::types::AppMode;
 
 /// Render the full TUI layout.
 pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
@@ -34,8 +36,9 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
     let file_list_area = main_chunks[0];
     let diff_view_area = main_chunks[1];
 
-    // Store file list area for mouse click mapping
+    // Store areas for mouse click mapping and page scroll calculations
     app.file_list_area = file_list_area;
+    app.diff_view_area = diff_view_area;
 
     // Render file list
     file_list::render(
@@ -80,4 +83,9 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
         app.mode,
         app.message.as_deref(),
     );
+
+    // Render help overlay on top of everything
+    if app.mode == AppMode::Help {
+        help_overlay::render(frame, frame.area());
+    }
 }

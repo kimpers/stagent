@@ -1,6 +1,11 @@
 # stagent
 
-Interactive TUI for reviewing unstaged git changes hunk-by-hunk. Stage selectively and add edit/comment feedback. Requires tmux.
+Interactive TUI for reviewing unstaged git changes hunk-by-hunk. Stage selectively and add edit/comment feedback.
+
+## Prerequisites
+
+- **tmux** - must run inside a tmux session
+- **Rust** - for building from source
 
 ## Install
 
@@ -11,56 +16,37 @@ cargo install --path .
 ## Usage
 
 ```bash
-# Run inside tmux
-stagent
-
-# Options
+stagent                        # Run inside tmux
 stagent --output review.txt    # Write feedback to file
-stagent --no-stage             # Review-only mode (don't stage)
-stagent --files "*.rs"         # Filter files by glob
-stagent -N                     # Include untracked files (intent-to-add)
-stagent -C 5                   # Context lines in feedback output
-stagent --spawn                # Spawn in tmux split and wait (for Claude/tools)
+stagent --no-stage             # Review-only mode
+stagent --files "*.rs"         # Filter by glob
+stagent -C 5                   # Context lines in output
+stagent --spawn                # Spawn in tmux split (for tools)
 ```
 
-## Keybindings
+Untracked files are automatically added with intent-to-add for hunk-by-hunk review.
+
+## Keys
 
 | Key | Action |
 |-----|--------|
-| `j`/`k` or `↓`/`↑` | Navigate hunks |
-| `Tab` | Toggle focus between file list and diff |
-| `y` | Stage current hunk |
-| `n` | Skip current hunk |
-| `s` | Split current hunk |
-| `e` | Edit hunk (opens `$EDITOR` in tmux split) |
-| `c` | Add comment to hunk |
-| `q` | Quit and output feedback |
+| `j`/`k`, `↓`/`↑` | Navigate hunks |
+| `Tab` | Toggle file list / diff focus |
+| `y` | Stage hunk |
+| `n` | Skip hunk |
+| `s` | Split hunk |
+| `e` | Edit hunk (`$EDITOR` in tmux split) |
+| `c` | Comment on hunk |
+| `q` | Quit |
 
 ## Output
 
-On quit, stagent outputs:
-- Edited hunks as unified diffs
-- Comments prefixed with `# REVIEW COMMENT:`
+Outputs edited hunks as unified diffs and comments as `# REVIEW COMMENT:` lines.
 
 ## Claude Code Integration
-
-Stagent includes a skill for [Claude Code](https://claude.ai/code) that enables interactive code review during AI-assisted development.
-
-### Setup
-
-Copy the skill to your Claude Code skills directory:
 
 ```bash
 cp -r agents/skills/stagent-review ~/.claude/skills/
 ```
 
-### Usage
-
-During a Claude Code session, use `/stagent-review` to launch an interactive review. Claude will:
-
-1. Open stagent in a tmux split pane
-2. Wait while you review and stage hunks
-3. Read any edits or comments you leave
-4. Apply your feedback to the code
-
-This creates a human-in-the-loop workflow where you can guide Claude's code changes through direct review.
+Use `/stagent-review` during a Claude Code session for human-in-the-loop code review.

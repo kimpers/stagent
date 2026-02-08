@@ -19,6 +19,10 @@ pub fn render(
             Span::styled(" Editing in split pane... ", theme::status_bar_style()),
             Span::styled("(waiting for editor to close)", theme::status_bar_style()),
         ]),
+        AppMode::Help => Line::from(Span::styled(
+            " Press any key to dismiss help ",
+            theme::status_bar_style(),
+        )),
         AppMode::Browsing => {
             if let Some(msg) = message {
                 Line::from(Span::styled(
@@ -29,7 +33,7 @@ pub fn render(
                 let progress = compute_progress(files);
                 Line::from(vec![
                     Span::styled(
-                        " y:stage  n:skip  e:edit  c:comment  s:split  q:quit  Tab:switch  j/k:scroll  ↑/↓:nav ",
+                        " y:stage  n:skip  s:split  e:edit  c:comment  q:quit  ?:help ",
                         theme::status_bar_style(),
                     ),
                     Span::styled(
