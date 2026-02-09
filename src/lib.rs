@@ -4,6 +4,7 @@ pub mod editor;
 pub mod feedback;
 pub mod git;
 pub mod highlight;
+pub mod patch;
 pub mod spawn;
 pub mod staging;
 pub mod types;

@@ -6,7 +6,7 @@ rust-version = "1.89.0"
 
 [dependencies]
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
 git2 = "0.19"
 syntect = "5"
 clap = { version = "4", features = ["derive"] }

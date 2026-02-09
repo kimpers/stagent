@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
 use clap::Parser;
+use git2::Repository;
 use std::path::PathBuf;
+
+use stagent::types::FileDiff;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -31,6 +34,10 @@ pub struct Cli {
     /// Spawn stagent in a tmux split pane and wait for completion
     #[arg(long)]
     spawn: bool,
+
+    /// Read a unified diff from stdin instead of computing one from git
+    #[arg(short = 'p', long = "patch")]
+    patch: bool,
 }
 
 fn main() -> Result<()> {
@@ -39,6 +46,13 @@ fn main() -> Result<()> {
     // Check tmux
     if std::env::var("TMUX").is_err() {
         bail!("stagent requires tmux. Please run inside a tmux session.");
+    }
+
+    // --patch + --spawn is not supported (stdin can't be forwarded through tmux split)
+    if cli.patch && cli.spawn {
+        bail!(
+            "--patch and --spawn cannot be used together (stdin cannot be forwarded through a tmux split)"
+        );
     }
 
     // Handle --spawn mode: spawn stagent in a split and wait for completion
@@ -53,16 +67,67 @@ fn main() -> Result<()> {
         return stagent::spawn::spawn_in_split(&opts);
     }
 
-    // Open repo
+    if cli.patch {
+        return run_patch_mode(&cli);
+    }
+
+    run_git_mode(&cli)
+}
+
+/// Maximum patch input size (100 MB). Prevents OOM from unbounded stdin.
+const MAX_PATCH_SIZE: u64 = 100 * 1024 * 1024;
+
+/// Run in patch mode: read a unified diff from stdin and review it.
+fn run_patch_mode(cli: &Cli) -> Result<()> {
+    use std::io::{IsTerminal, Read};
+
+    if std::io::stdin().is_terminal() {
+        bail!("--patch requires piped input. Usage: git diff | stagent -p");
+    }
+
+    let mut input = String::new();
+    std::io::stdin()
+        .take(MAX_PATCH_SIZE + 1)
+        .read_to_string(&mut input)?;
+    if input.len() as u64 > MAX_PATCH_SIZE {
+        bail!(
+            "Patch input exceeds maximum size ({} MB)",
+            MAX_PATCH_SIZE / (1024 * 1024)
+        );
+    }
+    let files = stagent::patch::parse_unified_diff(&input)?;
+
+    // Staging is disabled in patch mode — no git repo context
+    run_review_pipeline(files, None, true, "No changes to review.", cli)
+}
+
+/// Run in normal git mode: compute diff from working tree and review/stage.
+fn run_git_mode(cli: &Cli) -> Result<()> {
     let repo = stagent::git::open_repo(".")?;
 
     // Add untracked files with intent-to-add so they appear in the diff
     // and can be staged hunk-by-hunk.
     stagent::git::intent_to_add_untracked(&repo)?;
 
-    // Get unstaged diff
-    let mut files = stagent::git::get_unstaged_diff(&repo)?;
+    let files = stagent::git::get_unstaged_diff(&repo)?;
 
+    run_review_pipeline(
+        files,
+        Some(&repo),
+        cli.no_stage,
+        "No unstaged changes to review.",
+        cli,
+    )
+}
+
+/// Shared pipeline: filter files, run TUI, write feedback.
+fn run_review_pipeline(
+    mut files: Vec<FileDiff>,
+    repo: Option<&Repository>,
+    no_stage: bool,
+    empty_message: &str,
+    cli: &Cli,
+) -> Result<()> {
     // Filter by glob if specified
     if let Some(ref glob_pattern) = cli.files {
         match glob::Pattern::new(glob_pattern) {
@@ -86,14 +151,12 @@ fn main() -> Result<()> {
     });
 
     if files.is_empty() {
-        println!("No unstaged changes to review.");
+        println!("{}", empty_message);
         return Ok(());
     }
 
-    // Run TUI
-    let feedback = stagent::app::run(files, &repo, cli.no_stage)?;
+    let feedback = stagent::app::run(files, repo, no_stage)?;
 
-    // Output feedback
     if !feedback.is_empty() {
         let output = stagent::feedback::format_feedback(&feedback, cli.context_lines);
         stagent::feedback::write_feedback(&output, cli.output.as_deref())?;

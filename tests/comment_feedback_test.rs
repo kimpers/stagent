@@ -388,6 +388,216 @@ fn test_positioned_comments_in_hunk() {
     );
 }
 
+/// Regression: editors that strip trailing whitespace (vim `set
+/// list`, vscode `files.trimTrailingWhitespace`) turn context lines
+/// for empty source lines from `" "` into `""`.  This caused
+/// `parse_comment_result` to stop matching template lines, treating
+/// every subsequent hunk line as a comment.
+#[test]
+fn test_editor_strips_trailing_whitespace() {
+    let hunk = Hunk {
+        header: "@@ -1,4 +1,5 @@".to_string(),
+        lines: vec![
+            DiffLine {
+                kind: LineKind::Context,
+                content: "first\n".to_string(),
+                old_lineno: Some(1),
+                new_lineno: Some(1),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                // Empty source line — template writes " \n" → after .lines() → " "
+                content: "\n".to_string(),
+                old_lineno: Some(2),
+                new_lineno: Some(2),
+            },
+            DiffLine {
+                kind: LineKind::Added,
+                content: "async fn ensure_request_id(\n".to_string(),
+                old_lineno: None,
+                new_lineno: Some(3),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "last\n".to_string(),
+                old_lineno: Some(3),
+                new_lineno: Some(4),
+            },
+        ],
+        status: HunkStatus::Pending,
+        old_start: 1,
+        old_lines: 4,
+        new_start: 1,
+        new_lines: 5,
+    };
+
+    let tmpfile = editor::prepare_comment_tempfile(&hunk).unwrap();
+    let original = std::fs::read_to_string(tmpfile.path()).unwrap();
+
+    // Simulate editor that strips trailing whitespace on every line
+    let stripped: String = original
+        .lines()
+        .map(|l| l.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+
+    // User adds a single comment at the top of the hunk body
+    let mut edited_lines: Vec<&str> = stripped.lines().collect();
+    // Find the first hunk line (after the header/instruction lines)
+    let body_start = edited_lines
+        .iter()
+        .position(|l| l.starts_with(' ') || l.starts_with('+') || l.starts_with('-'))
+        .unwrap();
+    edited_lines.insert(
+        body_start,
+        "lets move this function into a shared middleware",
+    );
+    let edited = edited_lines.join("\n") + "\n";
+
+    let feedback = editor::parse_comment_result(
+        &original,
+        &edited,
+        "src/server.rs",
+        &hunk.header,
+        &hunk.lines,
+    );
+
+    assert!(feedback.is_some(), "Comment should be captured");
+    let fb = feedback.unwrap();
+
+    // Only the user's comment — no hunk lines should leak
+    assert_eq!(
+        fb.comment_positions.len(),
+        1,
+        "Expected exactly 1 comment, got {}: {:?}",
+        fb.comment_positions.len(),
+        fb.comment_positions
+    );
+    assert!(
+        fb.content
+            .contains("lets move this function into a shared middleware"),
+        "Comment text should be captured, got: {}",
+        fb.content
+    );
+
+    // Verify formatted output has exactly 1 REVIEW COMMENT line
+    let output = stagent::feedback::format_feedback(&[fb], 2);
+    let review_lines: Vec<&str> = output
+        .lines()
+        .filter(|l| l.starts_with("# REVIEW COMMENT:"))
+        .collect();
+    assert_eq!(
+        review_lines.len(),
+        1,
+        "Expected 1 REVIEW COMMENT line, got {}: {:?}",
+        review_lines.len(),
+        review_lines
+    );
+}
+
+/// Regression: when using patch mode (-p), the user replaces a line in the
+/// comment template with their comment (e.g. `cc` in vim on the empty context
+/// line).  Because the replaced original line was never matched,
+/// `parse_comment_result`'s sequential matching got stuck at `orig_idx = 0`
+/// and treated every remaining body line as a comment.
+#[test]
+fn test_comment_replaces_empty_context_line() {
+    // Exact hunk from `git diff Cargo.toml`: includes the empty context line
+    // between `rust-version = "1.89.0"` and `[dependencies]`.
+    let hunk = Hunk {
+        header: "@@ -6,7 +6,7 @@ rust-version = \"1.89.0\"".to_string(),
+        lines: vec![
+            DiffLine {
+                kind: LineKind::Context,
+                content: "\n".to_string(), // empty source line
+                old_lineno: Some(6),
+                new_lineno: Some(6),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "[dependencies]\n".to_string(),
+                old_lineno: Some(7),
+                new_lineno: Some(7),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "ratatui = \"0.29\"\n".to_string(),
+                old_lineno: Some(8),
+                new_lineno: Some(8),
+            },
+            DiffLine {
+                kind: LineKind::Removed,
+                content: "crossterm = \"0.28\"\n".to_string(),
+                old_lineno: Some(9),
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Added,
+                content: "crossterm = { version = \"0.28\", features = [\"use-dev-tty\"] }\n"
+                    .to_string(),
+                old_lineno: None,
+                new_lineno: Some(9),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "git2 = \"0.19\"\n".to_string(),
+                old_lineno: Some(10),
+                new_lineno: Some(10),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "syntect = \"5\"\n".to_string(),
+                old_lineno: Some(11),
+                new_lineno: Some(11),
+            },
+            DiffLine {
+                kind: LineKind::Context,
+                content: "clap = { version = \"4\", features = [\"derive\"] }\n".to_string(),
+                old_lineno: Some(12),
+                new_lineno: Some(12),
+            },
+        ],
+        status: HunkStatus::Pending,
+        old_start: 6,
+        old_lines: 7,
+        new_start: 6,
+        new_lines: 7,
+    };
+
+    let tmpfile = editor::prepare_comment_tempfile(&hunk).unwrap();
+    let original = std::fs::read_to_string(tmpfile.path()).unwrap();
+
+    // Simulate the user using `cc` on the empty context line " " to REPLACE it
+    // with their comment (instead of opening a new line).
+    let original_lines: Vec<&str> = original.lines().collect();
+    let mut edited_lines: Vec<String> = original_lines.iter().map(|l| l.to_string()).collect();
+
+    // Find the empty context line " " and replace it with the comment
+    let empty_ctx_idx = edited_lines
+        .iter()
+        .position(|l| l == " ")
+        .expect("should find the empty context line");
+    edited_lines[empty_ctx_idx] = "hell o world".to_string();
+    let edited = edited_lines.join("\n") + "\n";
+
+    let feedback =
+        editor::parse_comment_result(&original, &edited, "Cargo.toml", &hunk.header, &hunk.lines);
+
+    assert!(feedback.is_some(), "Comment should be captured");
+    let fb = feedback.unwrap();
+
+    // Key assertion: only 1 comment, not 8 (one per remaining line)
+    assert_eq!(
+        fb.comment_positions.len(),
+        1,
+        "Expected exactly 1 comment, got {}: {:?}",
+        fb.comment_positions.len(),
+        fb.comment_positions
+    );
+    assert_eq!(fb.content, "hell o world");
+}
+
 /// Same test but for edit mode.
 #[test]
 fn test_flush_pending_edit_captures_feedback() {

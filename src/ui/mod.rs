@@ -80,6 +80,7 @@ pub fn render(frame: &mut Frame, app: &mut App, highlighter: &Highlighter) {
         &app.files,
         app.mode,
         app.message.as_deref(),
+        app.no_stage,
     );
 
     // Render help overlay on top of everything

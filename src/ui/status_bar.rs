@@ -13,6 +13,7 @@ pub fn render(
     files: &[FileDiff],
     mode: AppMode,
     message: Option<&str>,
+    no_stage: bool,
 ) {
     let line = match mode {
         AppMode::WaitingForEditor => Line::from(vec![
@@ -31,9 +32,13 @@ pub fn render(
                 ))
             } else {
                 let progress = compute_progress(files);
+                let y_label = if no_stage { "y:accept" } else { "y:stage" };
                 Line::from(vec![
                     Span::styled(
-                        " y:stage  n:skip  s:split  e:edit  c:comment  q:quit  ?:help ",
+                        format!(
+                            " {}  n:skip  s:split  e:edit  c:comment  q:quit  ?:help ",
+                            y_label
+                        ),
                         theme::status_bar_style(),
                     ),
                     Span::styled(

@@ -323,6 +323,17 @@ impl App {
         });
     }
 
+    /// Accept the current hunk (marks as Staged without actually staging via git).
+    /// Used in patch mode where there's no git repo.
+    pub fn accept_current_hunk(&mut self) {
+        let _ = self.with_current_pending_hunk(None, |app, fi, hi, _| {
+            app.files[fi].hunks[hi].status = HunkStatus::Staged;
+            app.message = Some("Hunk accepted".to_string());
+            app.select_next_hunk();
+            Ok(())
+        });
+    }
+
     /// Split the current hunk into sub-hunks.
     pub fn split_current_hunk(&mut self) {
         let file_idx = self.selected_file;
@@ -493,7 +504,11 @@ impl Drop for TerminalGuard {
 }
 
 /// Run the TUI application. Returns collected feedback on exit.
-pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Vec<HunkFeedback>> {
+pub fn run(
+    files: Vec<FileDiff>,
+    repo: Option<&Repository>,
+    no_stage: bool,
+) -> Result<Vec<HunkFeedback>> {
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -651,11 +666,14 @@ pub fn run(files: Vec<FileDiff>, repo: &Repository, no_stage: bool) -> Result<Ve
                             }
                         }
                         KeyCode::Tab => app.toggle_focus(),
-                        KeyCode::Char('y') => {
-                            if let Err(e) = app.stage_current_hunk(repo) {
-                                app.message = Some(format!("Stage error: {}", e));
+                        KeyCode::Char('y') => match repo {
+                            Some(r) => {
+                                if let Err(e) = app.stage_current_hunk(r) {
+                                    app.message = Some(format!("Stage error: {}", e));
+                                }
                             }
-                        }
+                            None => app.accept_current_hunk(),
+                        },
                         KeyCode::Char('n') => app.skip_current_hunk(),
                         KeyCode::Char('s') => app.split_current_hunk(),
                         KeyCode::Char('e') => match app.start_edit() {
@@ -900,6 +918,30 @@ mod tests {
     fn test_skip_updates_hunk_status() {
         let mut app = App::new(make_test_files(), false);
         app.skip_current_hunk();
+        assert_eq!(app.files[0].hunks[0].status, HunkStatus::Skipped);
+    }
+
+    #[test]
+    fn test_accept_current_hunk() {
+        let mut app = App::new(make_test_files(), true);
+        assert_eq!(app.files[0].hunks[0].status, HunkStatus::Pending);
+        app.accept_current_hunk();
+        assert_eq!(app.files[0].hunks[0].status, HunkStatus::Staged);
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Hunk accepted"),
+            "Should show 'Hunk accepted' message"
+        );
+        // Should advance to next hunk
+        assert_eq!(app.selected_hunk, 1);
+    }
+
+    #[test]
+    fn test_accept_current_hunk_skips_non_pending() {
+        let mut app = App::new(make_test_files(), true);
+        app.files[0].hunks[0].status = HunkStatus::Skipped;
+        app.accept_current_hunk();
+        // Should not change status of already-skipped hunk
         assert_eq!(app.files[0].hunks[0].status, HunkStatus::Skipped);
     }
 

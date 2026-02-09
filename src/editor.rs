@@ -203,6 +203,12 @@ pub fn parse_edit_result(
     })
 }
 
+/// Compare an edited line against an original template line.
+/// Uses trim_end() fallback to handle editors that strip trailing whitespace.
+fn lines_match(edited: &str, original: &str) -> bool {
+    edited == original || edited.trim_end() == original.trim_end()
+}
+
 /// Parse comment content from an edited comment tempfile.
 ///
 /// Detects user comments by comparing the original template with the edited
@@ -244,10 +250,29 @@ pub fn parse_comment_result(
     let mut all_comment_text = Vec::new();
 
     for edited_line in &edited_body {
-        if orig_idx < original_body.len() && *edited_line == original_body[orig_idx] {
-            // Matches the next expected template line — advance
+        // Try to match at the current position first
+        if orig_idx < original_body.len() && lines_match(edited_line, original_body[orig_idx]) {
             orig_idx += 1;
-        } else if !edited_line.is_empty() {
+            continue;
+        }
+
+        // Look ahead in original_body to handle deleted/replaced lines.
+        // If the user replaced a template line with a comment (e.g. `cc` in
+        // vim on an empty context line), the original line is gone from the
+        // edited version.  Skipping past it prevents orig_idx from getting
+        // stuck and treating all subsequent lines as comments.
+        let mut matched_ahead = false;
+        if !edited_line.trim().is_empty() {
+            for (j, orig_line) in original_body.iter().enumerate().skip(orig_idx + 1) {
+                if lines_match(edited_line, orig_line) {
+                    orig_idx = j + 1;
+                    matched_ahead = true;
+                    break;
+                }
+            }
+        }
+
+        if !matched_ahead && !edited_line.trim().is_empty() {
             // This is a user comment at position orig_idx (after orig_idx-1)
             let text = if let Some(stripped) = edited_line.strip_prefix("# COMMENT:") {
                 stripped.trim()

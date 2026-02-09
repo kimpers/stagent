@@ -194,6 +194,130 @@ fn test_help_flag() {
 }
 
 #[test]
+fn test_patch_flag_parsed() {
+    let output = run_binary(&["-p"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should fail due to tmux, not a parse error
+    assert!(
+        stderr.to_lowercase().contains("tmux"),
+        "Should fail due to tmux, not bad arg parse, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_patch_and_spawn_rejected() {
+    // Must set TMUX so we get past the tmux check and actually hit the
+    // --patch + --spawn conflict validation at main.rs:49-51.
+    let output = Command::new(binary_path())
+        .args(["-p", "--spawn"])
+        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
+        .output()
+        .expect("Failed to execute binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "Should fail with --patch + --spawn, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("--patch and --spawn cannot be used together"),
+        "Should report the flag conflict, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_patch_empty_diff_from_stdin() {
+    // Pipe an empty string to stagent -p. Should exit cleanly with "No changes to review."
+    use std::process::Stdio;
+    let mut child = Command::new(binary_path())
+        .args(["-p"])
+        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn binary");
+
+    // Write empty diff to stdin and close it
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("Failed to wait for binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "Should succeed with empty piped input. stderr: {}, stdout: {}",
+        stderr,
+        stdout
+    );
+    assert!(
+        stdout.contains("No changes to review"),
+        "Should report no changes for empty diff, got stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+}
+
+#[test]
+fn test_patch_reads_piped_diff() {
+    // Pipe a real unified diff to stagent -p. Since the test subprocess has no
+    // controlling terminal (/dev/tty), the TUI can't fully start. But with the
+    // use-dev-tty feature enabled, the error should be about /dev/tty access
+    // (expected in headless test), NOT "Failed to initialize input reader" which
+    // would indicate crossterm tried to read from piped stdin.
+    //
+    // In a real tmux session, /dev/tty IS available and this works correctly.
+    // This test just ensures the stdin pipe isn't the failure point.
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let diff = "\
+diff --git a/test.rs b/test.rs
+--- a/test.rs
++++ b/test.rs
+@@ -1,3 +1,3 @@
+ fn main() {
+-    println!(\"hello\");
++    println!(\"hello world\");
+ }
+";
+
+    let mut child = Command::new(binary_path())
+        .args(["-p"])
+        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn binary");
+
+    // Write diff to stdin and close it
+    {
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+        stdin
+            .write_all(diff.as_bytes())
+            .expect("Failed to write to stdin");
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output().expect("Failed to wait for binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The key assertion: it should NOT fail with "Failed to initialize input reader".
+    // That error means crossterm tried to read keyboard events from piped stdin.
+    // With use-dev-tty, crossterm reads from /dev/tty instead, which will fail in
+    // this headless test with "Device not configured" but works in real tmux sessions.
+    assert!(
+        !stderr.contains("Failed to initialize input reader"),
+        "Should not fail with input reader error when using -p. stderr: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_unknown_flag_rejected() {
     let output = run_binary(&["--nonexistent-flag"]);
     assert!(
