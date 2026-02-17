@@ -43,6 +43,9 @@ pub struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Initialise color theme before anything renders
+    stagent::ui::theme::init(&cli.theme);
+
     // Check tmux
     if std::env::var("TMUX").is_err() {
         bail!("stagent requires tmux. Please run inside a tmux session.");

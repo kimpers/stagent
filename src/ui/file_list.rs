@@ -83,13 +83,13 @@ fn file_review_status(file: &FileDiff) -> (&'static str, Style) {
     }
 
     if all_staged {
-        ("✓", Style::default().fg(theme::STATUS_STAGED_FG))
+        ("✓", Style::default().fg(theme::status_staged_fg()))
     } else if all_done {
-        ("●", Style::default().fg(theme::STATUS_EDITED_FG))
+        ("●", Style::default().fg(theme::status_edited_fg()))
     } else if any_staged {
-        ("◐", Style::default().fg(theme::STATUS_PENDING_FG))
+        ("◐", Style::default().fg(theme::status_pending_fg()))
     } else {
-        ("○", Style::default().fg(theme::STATUS_PENDING_FG))
+        ("○", Style::default().fg(theme::status_pending_fg()))
     }
 }
 
@@ -105,10 +105,10 @@ fn delta_status_icon(status: DeltaStatus) -> &'static str {
 
 fn delta_color(status: DeltaStatus) -> Style {
     match status {
-        DeltaStatus::Modified => Style::default().fg(theme::FILE_HEADER_FG),
-        DeltaStatus::Added => Style::default().fg(theme::STATUS_STAGED_FG),
-        DeltaStatus::Deleted => Style::default().fg(theme::REMOVED_FG),
-        DeltaStatus::Renamed => Style::default().fg(theme::HUNK_HEADER_FG),
-        DeltaStatus::Untracked => Style::default().fg(theme::STATUS_PENDING_FG),
+        DeltaStatus::Modified => Style::default().fg(theme::file_header_fg()),
+        DeltaStatus::Added => Style::default().fg(theme::status_staged_fg()),
+        DeltaStatus::Deleted => Style::default().fg(theme::removed_fg()),
+        DeltaStatus::Renamed => Style::default().fg(theme::hunk_header_fg()),
+        DeltaStatus::Untracked => Style::default().fg(theme::status_pending_fg()),
     }
 }

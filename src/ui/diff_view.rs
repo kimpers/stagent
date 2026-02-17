@@ -49,7 +49,7 @@ pub fn render(
 
         // Hunk header line
         let header_style = if is_selected {
-            theme::hunk_header_style().bg(theme::SELECTED_BG)
+            theme::hunk_header_style().bg(theme::selected_bg())
         } else {
             theme::hunk_header_style()
         };
@@ -76,7 +76,7 @@ pub fn render(
                 .unwrap_or_else(|| "    ".to_string());
 
             let gutter_style = Style::default()
-                .fg(theme::CONTEXT_FG)
+                .fg(theme::context_fg())
                 .add_modifier(Modifier::DIM);
 
             // Use cached syntax highlighting
@@ -95,12 +95,12 @@ pub fn render(
                     prefix,
                     match diff_line.kind {
                         LineKind::Added => Style::default()
-                            .fg(theme::ADDED_FG)
+                            .fg(theme::added_fg())
                             .add_modifier(Modifier::BOLD),
                         LineKind::Removed => Style::default()
-                            .fg(theme::REMOVED_FG)
+                            .fg(theme::removed_fg())
                             .add_modifier(Modifier::BOLD),
-                        LineKind::Context => Style::default().fg(theme::CONTEXT_FG),
+                        LineKind::Context => Style::default().fg(theme::context_fg()),
                     },
                 ),
             ];
@@ -113,7 +113,7 @@ pub fn render(
         if hunk_idx < file.hunks.len() - 1 {
             lines.push(Line::from(Span::styled(
                 "─".repeat(area.width.saturating_sub(2) as usize),
-                Style::default().fg(theme::BORDER_UNFOCUSED),
+                Style::default().fg(theme::border_unfocused()),
             )));
         }
     }
@@ -137,10 +137,10 @@ fn hunk_status_indicator(hunk: &Hunk) -> &'static str {
 
 fn hunk_status_style(hunk: &Hunk) -> Style {
     match hunk.status {
-        HunkStatus::Pending => Style::default().fg(theme::STATUS_PENDING_FG),
-        HunkStatus::Staged => Style::default().fg(theme::STATUS_STAGED_FG),
-        HunkStatus::Skipped => Style::default().fg(theme::STATUS_SKIPPED_FG),
-        HunkStatus::Edited => Style::default().fg(theme::STATUS_EDITED_FG),
-        HunkStatus::Commented => Style::default().fg(theme::STATUS_COMMENTED_FG),
+        HunkStatus::Pending => Style::default().fg(theme::status_pending_fg()),
+        HunkStatus::Staged => Style::default().fg(theme::status_staged_fg()),
+        HunkStatus::Skipped => Style::default().fg(theme::status_skipped_fg()),
+        HunkStatus::Edited => Style::default().fg(theme::status_edited_fg()),
+        HunkStatus::Commented => Style::default().fg(theme::status_commented_fg()),
     }
 }

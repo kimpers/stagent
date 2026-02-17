@@ -37,8 +37,8 @@ impl Highlighter {
     /// The `kind` parameter controls the background color overlay.
     pub fn highlight_line(&self, path: &str, content: &str, kind: LineKind) -> Line<'static> {
         let bg = match kind {
-            LineKind::Added => Some(theme::ADDED_BG),
-            LineKind::Removed => Some(theme::REMOVED_DIM_BG),
+            LineKind::Added => Some(theme::added_bg()),
+            LineKind::Removed => Some(theme::removed_dim_bg()),
             LineKind::Context => None,
         };
 
@@ -47,7 +47,7 @@ impl Highlighter {
             let style = Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::DIM)
-                .bg(theme::REMOVED_DIM_BG);
+                .bg(theme::removed_dim_bg());
             return Line::from(Span::styled(content.to_string(), style));
         }
 
@@ -59,7 +59,7 @@ impl Highlighter {
             .flatten()
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-        let theme = match self.theme_set.themes.get("base16-ocean.dark") {
+        let theme = match self.theme_set.themes.get(theme::syntect_theme()) {
             Some(t) => t,
             None => {
                 // Fallback to plain text if theme not found
@@ -125,7 +125,7 @@ impl Highlighter {
             .flatten()
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
-        let theme = match self.theme_set.themes.get("base16-ocean.dark") {
+        let theme = match self.theme_set.themes.get(theme::syntect_theme()) {
             Some(t) => t,
             None => {
                 // Fallback: return plain lines
@@ -152,12 +152,12 @@ impl Highlighter {
                     let style = Style::default()
                         .fg(Color::Red)
                         .add_modifier(Modifier::DIM)
-                        .bg(theme::REMOVED_DIM_BG);
+                        .bg(theme::removed_dim_bg());
                     hunk_lines.push(Line::from(Span::styled(diff_line.content.clone(), style)));
                 } else {
                     // Context and Added lines: syntax highlight with shared state
                     let bg = match diff_line.kind {
-                        LineKind::Added => Some(theme::ADDED_BG),
+                        LineKind::Added => Some(theme::added_bg()),
                         LineKind::Context => None,
                         LineKind::Removed => unreachable!(),
                     };
@@ -257,7 +257,7 @@ mod tests {
         let line = h.highlight_line("foo.rs", "let x = 42;", LineKind::Added);
         // All spans should have green background
         for span in &line.spans {
-            assert_eq!(span.style.bg, Some(theme::ADDED_BG));
+            assert_eq!(span.style.bg, Some(theme::added_bg()));
         }
     }
 
@@ -354,7 +354,7 @@ mod tests {
         let added_line = &result[0][2];
         assert!(!added_line.spans.is_empty());
         for span in &added_line.spans {
-            assert_eq!(span.style.bg, Some(theme::ADDED_BG));
+            assert_eq!(span.style.bg, Some(theme::added_bg()));
         }
 
         // Context lines should have syntax colors
