@@ -36,23 +36,11 @@ fn run_binary_in_dir(dir: &std::path::Path, args: &[&str]) -> std::process::Outp
 }
 
 #[test]
-fn test_no_tmux_error() {
-    let output = run_binary(&[]);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "Should fail without tmux");
-    assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Error should mention tmux, got: {}",
-        stderr
-    );
-}
-
-#[test]
 fn test_not_a_repo_error() {
     // Run in /tmp which is not a git repo
     let tmp = tempfile::TempDir::new().unwrap();
     let output = Command::new(binary_path())
-        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
+        .env_remove("TMUX")
         .current_dir(tmp.path())
         .output()
         .expect("Failed to execute binary");
@@ -83,17 +71,10 @@ fn test_no_changes_message() {
 
 #[test]
 fn test_output_flag_parsed() {
-    // The --output flag should be accepted (we won't actually write to a file
-    // since there's no tmux, but we verify the flag doesn't cause a parse error)
+    // The --output flag should be accepted. Backend selection is automatic now,
+    // so this may fail for repo/runtime reasons, but it should not fail parsing.
     let output = run_binary(&["--output", "/tmp/test-output.md"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // It should fail because of tmux, not because of a bad flag
-    assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Should fail due to tmux, not bad arg parse, got: {}",
-        stderr
-    );
-    // Verify it's NOT an argument parsing error
     assert!(
         !stderr.contains("error: unexpected argument") && !stderr.contains("error: invalid value"),
         "Should not have arg parsing error, got: {}",
@@ -105,10 +86,9 @@ fn test_output_flag_parsed() {
 fn test_no_stage_flag() {
     let output = run_binary(&["--no-stage"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should fail due to tmux, not a parse error
     assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Should fail due to tmux, not bad arg parse, got: {}",
+        !stderr.contains("error: unexpected argument") && !stderr.contains("error: invalid value"),
+        "Should not have arg parsing error, got: {}",
         stderr
     );
 }
@@ -117,10 +97,9 @@ fn test_no_stage_flag() {
 fn test_files_glob_filter() {
     let output = run_binary(&["--files", "*.rs"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should fail due to tmux, not a parse error
     assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Should fail due to tmux, not bad arg parse, got: {}",
+        !stderr.contains("error: unexpected argument") && !stderr.contains("error: invalid value"),
+        "Should not have arg parsing error, got: {}",
         stderr
     );
 }
@@ -157,10 +136,9 @@ fn test_binary_file_skipped_via_glob() {
 fn test_theme_flag_parsed() {
     let output = run_binary(&["--theme", "monokai"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should fail due to tmux, not a parse error
     assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Should fail due to tmux, not bad arg parse, got: {}",
+        !stderr.contains("error: unexpected argument") && !stderr.contains("error: invalid value"),
+        "Should not have arg parsing error, got: {}",
         stderr
     );
 }
@@ -197,21 +175,17 @@ fn test_help_flag() {
 fn test_patch_flag_parsed() {
     let output = run_binary(&["-p"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should fail due to tmux, not a parse error
     assert!(
-        stderr.to_lowercase().contains("tmux"),
-        "Should fail due to tmux, not bad arg parse, got: {}",
+        !stderr.contains("error: unexpected argument") && !stderr.contains("error: invalid value"),
+        "Should not have arg parsing error, got: {}",
         stderr
     );
 }
 
 #[test]
 fn test_patch_and_spawn_rejected() {
-    // Must set TMUX so we get past the tmux check and actually hit the
-    // --patch + --spawn conflict validation at main.rs:49-51.
     let output = Command::new(binary_path())
         .args(["-p", "--spawn"])
-        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
         .output()
         .expect("Failed to execute binary");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -233,7 +207,6 @@ fn test_patch_empty_diff_from_stdin() {
     use std::process::Stdio;
     let mut child = Command::new(binary_path())
         .args(["-p"])
-        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -287,7 +260,6 @@ diff --git a/test.rs b/test.rs
 
     let mut child = Command::new(binary_path())
         .args(["-p"])
-        .env("TMUX", "/tmp/tmux-fake/default,12345,0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

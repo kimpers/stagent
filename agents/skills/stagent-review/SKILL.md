@@ -6,7 +6,7 @@ user-invocable: true
 
 # Stagent Review
 
-Launch stagent in a tmux split for the user to interactively review unstaged git changes.
+Launch stagent in the best available review environment for the user to interactively review unstaged git changes.
 
 ## User Actions
 
@@ -25,7 +25,8 @@ The user can:
    stagent --spawn --output /tmp/stagent-feedback.diff
    ```
 
-2. Tell the user that stagent is now open in a split pane and explain the key bindings.
+2. Tell the user that stagent is now open in a review session and explain the key bindings.
+   It will automatically prefer `cmux`, then `tmux`, then full-screen in the current terminal.
 
 3. Wait for the command to complete (the user will stage hunks and quit when done).
 
@@ -50,5 +51,5 @@ The feedback file contains unified diff format for edits and positioned comments
 
 ## Notes
 
-- Requires tmux (stagent is a TUI that runs inside tmux)
-- The `--spawn` flag handles opening the split and waiting for completion
+- The `--spawn` flag automatically prefers `cmux`, then `tmux`, then full-screen
+- The user does not need to choose the backend explicitly

@@ -1,6 +1,6 @@
 //! Tests for the spawn module (--spawn flag functionality).
 
-use stagent::spawn::{SpawnOptions, build_spawn_command};
+use stagent::spawn::{SpawnOptions, build_spawn_argv};
 use std::path::PathBuf;
 
 fn default_opts() -> SpawnOptions {
@@ -16,38 +16,9 @@ fn default_opts() -> SpawnOptions {
 #[test]
 fn test_spawn_command_format() {
     let opts = default_opts();
-    let cmd = build_spawn_command(&opts);
+    let cmd = build_spawn_argv(&opts);
 
-    // Verify basic structure
-    assert_eq!(cmd[0], "tmux");
-    assert_eq!(cmd[1], "split-window");
-
-    // Find the position of key flags
-    let h_pos = cmd.iter().position(|s| s == "-h");
-    let p_pos = cmd.iter().position(|s| s == "-p");
-    let fifty_pos = cmd.iter().position(|s| s == "50");
-    let big_p_pos = cmd.iter().position(|s| s == "-P");
-    let f_pos = cmd.iter().position(|s| s == "-F");
-    let pane_id_pos = cmd.iter().position(|s| s == "#{pane_id}");
-    let separator_pos = cmd.iter().position(|s| s == "--");
-
-    // All required flags should be present
-    assert!(h_pos.is_some(), "-h flag missing");
-    assert!(p_pos.is_some(), "-p flag missing");
-    assert!(fifty_pos.is_some(), "50 value missing");
-    assert!(big_p_pos.is_some(), "-P flag missing");
-    assert!(f_pos.is_some(), "-F flag missing");
-    assert!(pane_id_pos.is_some(), "#{{pane_id}} format missing");
-    assert!(separator_pos.is_some(), "-- separator missing");
-
-    // -p should be followed by 50
-    assert_eq!(p_pos.unwrap() + 1, fifty_pos.unwrap());
-
-    // -F should be followed by #{pane_id}
-    assert_eq!(f_pos.unwrap() + 1, pane_id_pos.unwrap());
-
-    // The executable should come after --
-    assert!(cmd.len() > separator_pos.unwrap() + 1);
+    assert!(!cmd.is_empty(), "child argv should include the executable");
 }
 
 #[test]
@@ -59,7 +30,7 @@ fn test_spawn_command_no_spawn_flag() {
         context_lines: 5,
         no_stage: true,
     };
-    let cmd = build_spawn_command(&opts);
+    let cmd = build_spawn_argv(&opts);
 
     // Should NOT contain --spawn (would cause infinite recursion)
     assert!(
@@ -74,7 +45,7 @@ fn test_spawn_command_forwards_output() {
         output: Some(PathBuf::from("/tmp/feedback.diff")),
         ..default_opts()
     };
-    let cmd = build_spawn_command(&opts);
+    let cmd = build_spawn_argv(&opts);
 
     let output_pos = cmd.iter().position(|s| s == "--output");
     assert!(output_pos.is_some(), "--output flag should be present");
@@ -91,7 +62,7 @@ fn test_spawn_command_forwards_files_filter() {
         files: Some("src/**/*.rs".to_string()),
         ..default_opts()
     };
-    let cmd = build_spawn_command(&opts);
+    let cmd = build_spawn_argv(&opts);
 
     let files_pos = cmd.iter().position(|s| s == "--files");
     assert!(files_pos.is_some(), "--files flag should be present");
@@ -108,7 +79,7 @@ fn test_spawn_command_forwards_no_stage() {
         no_stage: true,
         ..default_opts()
     };
-    let cmd = build_spawn_command(&opts);
+    let cmd = build_spawn_argv(&opts);
 
     assert!(
         cmd.iter().any(|s| s == "--no-stage"),
@@ -117,24 +88,23 @@ fn test_spawn_command_forwards_no_stage() {
 }
 
 // ---------------------------------------------------------------------------
-// Integration tests (require tmux, marked #[ignore])
+// Integration tests (require tmux or cmux, marked #[ignore])
 // ---------------------------------------------------------------------------
 
-/// Test that spawning in tmux works and completes.
-///
-/// This test:
-/// 1. Creates a temp git repo with unstaged changes
-/// 2. Runs stagent --spawn with a short-lived command
-/// 3. Sends 'q' to quit immediately
-/// 4. Verifies the spawn completes
 #[test]
 #[ignore]
-fn test_spawn_in_tmux() {
+fn test_spawn_in_mux() {
     use std::process::Command;
 
-    // Skip if not in tmux
-    if std::env::var("TMUX").is_err() {
-        eprintln!("Skipping test: not in tmux session");
+    let in_tmux = std::env::var("TMUX").is_ok();
+    let in_cmux = Command::new("cmux")
+        .arg("identify")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+
+    if !in_tmux && !in_cmux {
+        eprintln!("Skipping test: not in tmux or cmux");
         return;
     }
 
@@ -192,14 +162,23 @@ fn test_spawn_in_tmux() {
     let repo_path_clone = repo_path.to_path_buf();
 
     std::thread::spawn(move || {
-        // Wait for stagent to start
         std::thread::sleep(std::time::Duration::from_millis(1500));
 
-        // Send 'q' to the most recently created pane
-        let _ = Command::new("tmux")
-            .args(["send-keys", "-t", "{last}", "q"])
-            .current_dir(&repo_path_clone)
-            .output();
+        if std::env::var("TMUX").is_ok() {
+            let _ = Command::new("tmux")
+                .args(["send-keys", "-t", "{last}", "q"])
+                .current_dir(&repo_path_clone)
+                .output();
+        } else {
+            let _ = Command::new("cmux")
+                .args(["send", "q"])
+                .current_dir(&repo_path_clone)
+                .output();
+            let _ = Command::new("cmux")
+                .args(["send-key", "Enter"])
+                .current_dir(&repo_path_clone)
+                .output();
+        }
     });
 
     let result = Command::new(&stagent_exe)

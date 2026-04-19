@@ -1,6 +1,6 @@
 /// Reproduction test for the bug: after `:wq` in vim, the TUI stays stuck on
-/// "Editing in split pane..." because `wait_for_pane_close` never detects the
-/// pane has closed.
+/// "Editing in split pane..." because editor close detection never noticed the
+/// pane had closed.
 ///
 /// Root cause: When a tmux pane's process exits, tmux destroys the pane immediately
 /// (unless `remain-on-exit` is on). `tmux display-message -t <pane_id> -p '#{pane_dead}'`
@@ -11,7 +11,8 @@
 #[test]
 #[ignore]
 fn test_pane_close_detected_after_process_exits() {
-    use stagent::editor::{open_editor, wait_for_pane_close};
+    use stagent::editor::{open_editor, wait_for_editor_close};
+    use stagent::mux::SplitHandle;
 
     // Override editor to `true` which exits immediately
     let orig_visual = std::env::var("VISUAL").ok();
@@ -24,24 +25,24 @@ fn test_pane_close_detected_after_process_exits() {
     let tmpfile = tempfile::NamedTempFile::new().expect("create tmpfile");
     let path = tmpfile.path().to_str().unwrap().to_string();
 
-    let pane_id = open_editor(&path).expect("should open tmux split");
+    let handle = open_editor(&path).expect("should open tmux split");
     assert!(
-        pane_id.starts_with('%'),
-        "pane_id should start with %, got: {}",
-        pane_id
+        matches!(handle, SplitHandle::TmuxPane(_)),
+        "expected tmux pane handle, got {:?}",
+        handle
     );
 
     // `true` exits instantly. Give tmux 1 second to destroy the pane.
     std::thread::sleep(std::time::Duration::from_secs(1));
 
-    let rx = wait_for_pane_close(pane_id);
+    let rx = wait_for_editor_close(handle);
 
     // BUG: This should complete within 3 seconds but previously hung forever
     // because pane_dead detection was broken.
     let result = rx.recv_timeout(std::time::Duration::from_secs(5));
     assert!(
         result.is_ok(),
-        "wait_for_pane_close should detect closed pane within 5 seconds"
+        "wait_for_editor_close should detect closed pane within 5 seconds"
     );
 
     // Restore env

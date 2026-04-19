@@ -84,6 +84,47 @@ pub fn stage_hunk(
     Ok(())
 }
 
+/// Unstage a single hunk by reversing the blob reconstruction in the index.
+///
+/// This is the inverse of `stage_hunk`: it reads the current index content
+/// (which has the hunk applied), reverses the hunk's changes, and writes
+/// the result back to the index.
+pub fn unstage_hunk(
+    repo: &Repository,
+    file_diff: &FileDiff,
+    hunk: &Hunk,
+    line_offset: i32,
+) -> Result<()> {
+    let file_path = &file_diff.path;
+    let mut index = repo.index().context("Failed to get repository index")?;
+
+    // Read current index content (with the hunk already applied)
+    let staged_content = get_index_content(repo, file_path)?;
+
+    // Reconstruct content with this hunk reversed
+    let new_content = reconstruct_blob_reverse(&staged_content, hunk, line_offset)?;
+
+    // Write the new blob
+    let blob_oid = repo
+        .blob(new_content.as_bytes())
+        .context("Failed to write blob")?;
+
+    let file_path_str = file_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("File path is not valid UTF-8: {:?}", file_path))?;
+
+    if let Some(mut entry) = index.get_path(Path::new(file_path_str), 0) {
+        entry.id = blob_oid;
+        entry.file_size = new_content.len() as u32;
+        index.add(&entry).context("Failed to update index entry")?;
+        index.write().context("Failed to write index")?;
+    } else {
+        bail!("File not found in index: {:?}", file_path);
+    }
+
+    Ok(())
+}
+
 /// Read the current content of a file from the index/HEAD.
 /// Returns empty string for untracked/new files.
 fn get_index_content(repo: &Repository, path: &Path) -> Result<String> {
@@ -185,6 +226,64 @@ pub fn reconstruct_blob(original: &str, hunk: &Hunk, line_offset: i32) -> Result
     // Preserve trailing newline if original had one
     let mut output = result.join("\n");
     if original.ends_with('\n') || original.is_empty() {
+        output.push('\n');
+    }
+
+    Ok(output)
+}
+
+/// Reconstruct file content with a single hunk reversed (unstaged).
+///
+/// This is the inverse of `reconstruct_blob`. It operates on index content
+/// that already has the hunk applied, and removes the hunk's effect:
+/// - Uses `hunk.new_start` (the "new" side) as the target range, since that's
+///   where the hunk lives in the staged content
+/// - Context lines are kept, Added lines are skipped, Removed lines are restored
+pub fn reconstruct_blob_reverse(staged: &str, hunk: &Hunk, line_offset: i32) -> Result<String> {
+    let staged_lines: Vec<&str> = if staged.is_empty() {
+        Vec::new()
+    } else {
+        staged.lines().collect()
+    };
+
+    let mut result = Vec::new();
+    let adjusted_start = (hunk.new_start as i32 + line_offset).max(0) as usize;
+    let hunk_start_idx = if adjusted_start == 0 {
+        0
+    } else {
+        adjusted_start - 1
+    };
+
+    // In the staged content, the hunk occupies new_lines lines
+    let hunk_new_line_count = hunk.new_lines as usize;
+
+    // Copy lines before the hunk
+    for line in staged_lines.iter().take(hunk_start_idx) {
+        result.push(line.to_string());
+    }
+
+    // Apply hunk lines in reverse: keep Context + Removed, skip Added
+    for diff_line in &hunk.lines {
+        match diff_line.kind {
+            LineKind::Context | LineKind::Removed => {
+                let content = diff_line.content.trim_end_matches('\n');
+                result.push(content.to_string());
+            }
+            LineKind::Added => {
+                // Skip added lines — they are being un-applied
+            }
+        }
+    }
+
+    // Copy lines after the hunk
+    let after_hunk_idx = hunk_start_idx + hunk_new_line_count;
+    for line in staged_lines.iter().skip(after_hunk_idx) {
+        result.push(line.to_string());
+    }
+
+    // Preserve trailing newline if staged content had one
+    let mut output = result.join("\n");
+    if staged.ends_with('\n') || staged.is_empty() {
         output.push('\n');
     }
 

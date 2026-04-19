@@ -3,7 +3,7 @@ mod helpers;
 use git2::{DiffOptions, Repository};
 use stagent::diff::{parse_diff, split_hunk};
 use stagent::git::intent_to_add_untracked;
-use stagent::staging::{reconstruct_blob, stage_hunk};
+use stagent::staging::{reconstruct_blob, reconstruct_blob_reverse, stage_hunk, unstage_hunk};
 use stagent::types::{DiffLine, FileDiff, Hunk, HunkStatus, LineKind};
 
 /// Helper: get the staged (cached) diff for assertion checks.
@@ -872,4 +872,226 @@ fn test_reconstruct_blob_with_offset() {
     // With offset=1, old_start=2 becomes 3, so we start at line 3 which is "b"
     // We should still get the modification
     assert_eq!(after_with_offset, "a\nINSERTED\nB\nc\nd\ne\n");
+}
+
+// ============================================================
+// Unit tests: reconstruct_blob_reverse
+// ============================================================
+
+#[test]
+fn test_reconstruct_blob_reverse_modify() {
+    // After staging: line3 was replaced with LINE3_MODIFIED
+    // Reversing should restore original line3
+    let staged_content = "line1\nline2\nLINE3_MODIFIED\nline4\nline5\n";
+
+    let hunk = make_hunk(
+        2,
+        3,
+        2,
+        3,
+        vec![
+            (LineKind::Context, "line2\n"),
+            (LineKind::Removed, "line3\n"),
+            (LineKind::Added, "LINE3_MODIFIED\n"),
+            (LineKind::Context, "line4\n"),
+        ],
+    );
+
+    let result = reconstruct_blob_reverse(staged_content, &hunk, 0).unwrap();
+    assert_eq!(result, "line1\nline2\nline3\nline4\nline5\n");
+}
+
+#[test]
+fn test_reconstruct_blob_reverse_added_line() {
+    // After staging: "inserted" was added between line2 and line3
+    // Reversing should remove it
+    let staged_content = "line1\nline2\ninserted\nline3\n";
+
+    let hunk = make_hunk(
+        2,
+        2,
+        2,
+        3,
+        vec![
+            (LineKind::Context, "line2\n"),
+            (LineKind::Added, "inserted\n"),
+            (LineKind::Context, "line3\n"),
+        ],
+    );
+
+    let result = reconstruct_blob_reverse(staged_content, &hunk, 0).unwrap();
+    assert_eq!(result, "line1\nline2\nline3\n");
+}
+
+#[test]
+fn test_reconstruct_blob_reverse_removed_line() {
+    // After staging: "line3" was removed
+    // Reversing should restore it
+    let staged_content = "line1\nline2\nline4\n";
+
+    let hunk = make_hunk(
+        2,
+        3,
+        2,
+        2,
+        vec![
+            (LineKind::Context, "line2\n"),
+            (LineKind::Removed, "line3\n"),
+            (LineKind::Context, "line4\n"),
+        ],
+    );
+
+    let result = reconstruct_blob_reverse(staged_content, &hunk, 0).unwrap();
+    assert_eq!(result, "line1\nline2\nline3\nline4\n");
+}
+
+#[test]
+fn test_reconstruct_blob_reverse_at_start() {
+    // After staging: "first" was replaced with "FIRST"
+    let staged_content = "FIRST\nsecond\nthird\n";
+
+    let hunk = make_hunk(
+        1,
+        2,
+        1,
+        2,
+        vec![
+            (LineKind::Removed, "first\n"),
+            (LineKind::Added, "FIRST\n"),
+            (LineKind::Context, "second\n"),
+        ],
+    );
+
+    let result = reconstruct_blob_reverse(staged_content, &hunk, 0).unwrap();
+    assert_eq!(result, "first\nsecond\nthird\n");
+}
+
+#[test]
+fn test_reconstruct_blob_reverse_with_offset() {
+    // After a previous hunk added 1 line, the index content is shifted
+    let staged_content = "a\nINSERTED\nB\nc\nd\ne\n";
+
+    let hunk = make_hunk(
+        2,
+        2,
+        2,
+        2,
+        vec![
+            (LineKind::Removed, "b\n"),
+            (LineKind::Added, "B\n"),
+            (LineKind::Context, "c\n"),
+        ],
+    );
+
+    // offset=1 means new_start=2 becomes 3 in the index
+    let result = reconstruct_blob_reverse(staged_content, &hunk, 1).unwrap();
+    assert_eq!(result, "a\nINSERTED\nb\nc\nd\ne\n");
+}
+
+// ============================================================
+// Integration tests: unstage_hunk
+// ============================================================
+
+#[test]
+fn test_unstage_single_hunk() {
+    let (dir, repo) = helpers::create_temp_repo();
+
+    helpers::commit_file(&repo, "hello.txt", "line1\nline2\nline3\n");
+    helpers::modify_file(&repo, "hello.txt", "line1\nline2 modified\nline3\n");
+
+    // Parse and stage the hunk
+    let files = get_unstaged_diff(&repo);
+    assert_eq!(files.len(), 1);
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
+
+    // Verify it's staged
+    let staged = get_staged_diff(&repo);
+    assert_eq!(staged.len(), 1);
+
+    // Now unstage it
+    unstage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
+
+    // Staged diff should be empty
+    let staged = get_staged_diff(&repo);
+    assert!(
+        staged.is_empty(),
+        "Staged diff should be empty after unstaging"
+    );
+
+    // Unstaged diff should show the change again
+    let unstaged = get_unstaged_diff(&repo);
+    let hello: Vec<_> = unstaged
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "hello.txt")
+        .collect();
+    assert!(!hello.is_empty(), "Change should be back in unstaged diff");
+
+    drop(dir);
+}
+
+#[test]
+fn test_unstage_one_of_two_hunks() {
+    let (dir, repo) = helpers::create_temp_repo();
+
+    let original = (1..=20)
+        .map(|i| format!("line{}", i))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    helpers::commit_file(&repo, "multi.txt", &original);
+
+    let modified = original
+        .replace("line2", "line2 CHANGED")
+        .replace("line19", "line19 CHANGED");
+    helpers::modify_file(&repo, "multi.txt", &modified);
+
+    let files = get_unstaged_diff(&repo);
+    assert_eq!(files.len(), 1);
+    assert!(files[0].hunks.len() >= 2);
+
+    // Stage both hunks
+    stage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
+    let offset = files[0].hunks[0].new_lines as i32 - files[0].hunks[0].old_lines as i32;
+    stage_hunk(&repo, &files[0], &files[0].hunks[1], offset).unwrap();
+
+    // Verify both staged
+    let staged = get_staged_diff(&repo);
+    assert_eq!(staged.len(), 1);
+
+    // Unstage only the first hunk (offset=0 since no staged hunks before it)
+    unstage_hunk(&repo, &files[0], &files[0].hunks[0], 0).unwrap();
+
+    // Staged diff should still show the second change
+    let staged = get_staged_diff(&repo);
+    assert_eq!(staged.len(), 1);
+    let staged_lines: String = staged[0]
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .map(|l| l.content.clone())
+        .collect();
+    assert!(
+        staged_lines.contains("line19 CHANGED"),
+        "Second hunk should remain staged"
+    );
+
+    // Unstaged diff should show the first change again
+    let unstaged = get_unstaged_diff(&repo);
+    let multi: Vec<_> = unstaged
+        .iter()
+        .filter(|f| f.path.to_str().unwrap() == "multi.txt")
+        .collect();
+    assert!(!multi.is_empty());
+    let unstaged_lines: String = multi[0]
+        .hunks
+        .iter()
+        .flat_map(|h| h.lines.iter())
+        .map(|l| l.content.clone())
+        .collect();
+    assert!(
+        unstaged_lines.contains("line2 CHANGED"),
+        "First hunk should be back in unstaged diff"
+    );
+
+    drop(dir);
 }

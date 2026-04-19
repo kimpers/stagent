@@ -1,9 +1,10 @@
 use std::io::Read;
 
 use stagent::editor::{
-    build_pane_exists_check_command, build_tmux_split_command, parse_comment_result,
-    parse_edit_result, prepare_comment_tempfile, prepare_edit_tempfile,
+    build_editor_command, build_pane_exists_check_command, build_tmux_split_command,
+    parse_comment_result, parse_edit_result, prepare_comment_tempfile, prepare_edit_tempfile,
 };
+use stagent::mux::SplitHandle;
 use stagent::types::{DiffLine, FeedbackKind, Hunk, HunkStatus, LineKind};
 
 /// Helper: build a Hunk with the given lines for testing.
@@ -28,8 +29,14 @@ fn make_hunk(header: &str, lines: Vec<(LineKind, &str)>) -> Hunk {
 }
 
 // ---------------------------------------------------------------------------
-// build_tmux_split_command
+// build commands
 // ---------------------------------------------------------------------------
+
+#[test]
+fn test_build_editor_command() {
+    let cmd = build_editor_command("vim", "/tmp/test.rs");
+    assert_eq!(cmd, vec!["vim".to_string(), "/tmp/test.rs".to_string()]);
+}
 
 #[test]
 fn test_build_tmux_split_command() {
@@ -387,7 +394,7 @@ fn test_parse_comments_whitespace_handling() {
 #[test]
 #[ignore]
 fn test_tmux_split_opens_and_closes() {
-    use stagent::editor::{open_editor, wait_for_pane_close};
+    use stagent::editor::{open_editor, wait_for_editor_close};
 
     // Use a temp file and an editor command that exits immediately
     let tmpfile = tempfile::NamedTempFile::new().expect("create tmp");
@@ -399,14 +406,14 @@ fn test_tmux_split_opens_and_closes() {
         std::env::set_var("VISUAL", "true"); // `true` exits 0 immediately
     }
 
-    let pane_id = open_editor(&path).expect("should open tmux split");
+    let handle = open_editor(&path).expect("should open tmux split");
     assert!(
-        pane_id.starts_with('%'),
-        "pane_id should start with %%, got: {}",
-        pane_id
+        matches!(handle, SplitHandle::TmuxPane(_)),
+        "handle should be a tmux pane, got: {:?}",
+        handle
     );
 
-    let rx = wait_for_pane_close(pane_id);
+    let rx = wait_for_editor_close(handle);
     // Should receive signal within a reasonable time
     rx.recv_timeout(std::time::Duration::from_secs(10))
         .expect("pane should close within 10s");
@@ -430,14 +437,18 @@ fn test_tmux_pane_id_captured() {
         std::env::set_var("VISUAL", "true");
     }
 
-    let pane_id = open_editor(&path).expect("should open tmux split");
-    assert!(!pane_id.is_empty(), "pane_id should not be empty");
-    // tmux pane IDs look like %0, %1, %42, etc.
-    assert!(
-        pane_id.starts_with('%'),
-        "pane_id should be a tmux pane id (%%N), got: {}",
-        pane_id
-    );
+    let handle = open_editor(&path).expect("should open tmux split");
+    match handle {
+        SplitHandle::TmuxPane(pane_id) => {
+            assert!(!pane_id.is_empty(), "pane_id should not be empty");
+            assert!(
+                pane_id.starts_with('%'),
+                "pane_id should be a tmux pane id (%%N), got: {}",
+                pane_id
+            );
+        }
+        other => panic!("expected tmux pane handle, got {:?}", other),
+    }
 
     // SAFETY: This test is single-threaded
     unsafe {

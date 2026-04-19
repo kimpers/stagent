@@ -1,41 +1,24 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use similar::TextDiff;
 use std::io::Write;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use crate::mux::{self, SplitHandle};
 use crate::types::{DiffLine, FeedbackKind, Hunk, HunkFeedback, LineKind};
 
-/// Build the tmux split-window command arguments.
-///
-/// The editor and file path are passed as separate shell-quoted arguments
-/// to avoid command injection via `$EDITOR` or paths with special characters.
-pub fn build_tmux_split_command(editor: &str, file_path: &str) -> Vec<String> {
-    vec![
-        "tmux".to_string(),
-        "split-window".to_string(),
-        "-h".to_string(),
-        "-p".to_string(),
-        "50".to_string(),
-        "-P".to_string(),
-        "-F".to_string(),
-        "#{pane_id}".to_string(),
-        "--".to_string(),
-        editor.to_string(),
-        file_path.to_string(),
-    ]
+/// Build the editor command argv.
+pub fn build_editor_command(editor: &str, file_path: &str) -> Vec<String> {
+    vec![editor.to_string(), file_path.to_string()]
 }
 
-/// Build a command to check if a tmux pane still exists.
-///
-/// Uses `tmux list-panes -F '#{pane_id}'` which lists all pane IDs in the
-/// current session. If our pane_id is NOT in the output, the pane has closed.
-///
-/// Note: We intentionally avoid `tmux display-message -t <pane_id> -p '#{pane_dead}'`
-/// because when a pane's process exits, tmux destroys the pane immediately (unless
-/// `remain-on-exit` is set). On destroyed panes, `display-message` returns an empty
-/// string with exit code 0 on tmux 3.x, making `pane_dead` unreliable.
+/// Build the tmux split-window command arguments for opening the editor.
+pub fn build_tmux_split_command(editor: &str, file_path: &str) -> Vec<String> {
+    mux::build_tmux_split_command(&build_editor_command(editor, file_path))
+}
+
+/// Build the command used to probe whether a tmux pane still exists.
 pub fn build_pane_exists_check_command() -> Vec<String> {
     vec![
         "tmux".to_string(),
@@ -53,42 +36,41 @@ pub fn get_editor() -> String {
         .unwrap_or_else(|_| "vi".to_string())
 }
 
-/// Open the editor in a tmux split pane. Returns the pane ID.
-pub fn open_editor(file_path: &str) -> Result<String> {
+/// Open the editor in the preferred environment.
+///
+/// Prefers cmux splits, then tmux splits, and finally falls back to the current
+/// terminal if no multiplexer is active.
+pub fn open_editor(file_path: &str) -> Result<SplitHandle> {
     let editor = get_editor();
-    let cmd = build_tmux_split_command(&editor, file_path);
+    let argv = build_editor_command(&editor, file_path);
 
-    let output = std::process::Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .output()
-        .context("Failed to run tmux split-window")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("tmux split-window failed: {}", stderr);
+    if let Some(handle) = mux::open_command_in_preferred_split(&argv)? {
+        return Ok(handle);
     }
 
-    let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(pane_id)
+    run_editor_fullscreen(&argv)?;
+    Ok(SplitHandle::Immediate)
 }
 
 /// Maximum number of poll iterations before giving up on pane close detection.
 /// At 500ms per poll, this is ~5 minutes.
 const MAX_PANE_POLL_ITERATIONS: u32 = 600;
 
-/// Wait for a tmux pane to close by polling whether the pane still exists.
-/// Returns a receiver that signals when the pane closes.
-pub fn wait_for_pane_close(pane_id: String) -> mpsc::Receiver<()> {
+/// Wait for an editor session to close by polling whether the underlying handle
+/// still exists. Returns a receiver that signals when the session closes.
+pub fn wait_for_editor_close(handle: SplitHandle) -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        for _ in 0..MAX_PANE_POLL_ITERATIONS {
-            if !pane_exists(&pane_id) {
-                let _ = tx.send(());
-                return;
-            }
-            thread::sleep(Duration::from_millis(500));
+        if mux::poll_handle_close(
+            &handle,
+            MAX_PANE_POLL_ITERATIONS,
+            Duration::from_millis(500),
+        ) {
+            let _ = tx.send(());
+            return;
         }
+
         // Timeout: send signal anyway so the UI doesn't hang forever
         let _ = tx.send(());
     });
@@ -96,16 +78,37 @@ pub fn wait_for_pane_close(pane_id: String) -> mpsc::Receiver<()> {
     rx
 }
 
-/// Check if a tmux pane still exists by listing all panes and searching for
-/// the given pane ID.
-pub fn pane_exists(pane_id: &str) -> bool {
-    let cmd = build_pane_exists_check_command();
-    match std::process::Command::new(&cmd[0]).args(&cmd[1..]).output() {
-        Ok(output) => {
-            let pane_list = String::from_utf8_lossy(&output.stdout);
-            pane_list.lines().any(|line| line.trim() == pane_id)
-        }
-        Err(_) => false, // tmux command failed, assume pane is gone
+fn run_editor_fullscreen(argv: &[String]) -> Result<()> {
+    let _suspend = CurrentTerminalEditorSession::suspend()?;
+    std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .with_context(|| format!("Failed to launch editor `{}`", argv[0]))?;
+    Ok(())
+}
+
+struct CurrentTerminalEditorSession;
+
+impl CurrentTerminalEditorSession {
+    fn suspend() -> Result<Self> {
+        crossterm::terminal::disable_raw_mode()?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+        )?;
+        Ok(Self)
+    }
+}
+
+impl Drop for CurrentTerminalEditorSession {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::enable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
+        );
     }
 }
 

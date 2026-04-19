@@ -15,7 +15,7 @@ use crate::staging;
 use crate::types::{AppMode, FileDiff, FocusPanel, Hunk, HunkFeedback, HunkStatus};
 use crate::ui;
 
-/// Pending editor state while waiting for the user to close a tmux split pane.
+/// Pending editor state while waiting for the external editor session to close.
 pub struct EditorState {
     pub tmpfile: tempfile::NamedTempFile,
     pub rx: Receiver<()>,
@@ -293,6 +293,14 @@ impl App {
         }
     }
 
+    /// Check if the current hunk is already staged.
+    pub fn is_current_hunk_staged(&self) -> bool {
+        self.files
+            .get(self.selected_file)
+            .and_then(|file| file.hunks.get(self.selected_hunk))
+            .is_some_and(|hunk| hunk.status == HunkStatus::Staged)
+    }
+
     /// Stage the current hunk.
     pub fn stage_current_hunk(&mut self, repo: &Repository) -> Result<()> {
         self.with_current_pending_hunk(Some(repo), |app, fi, hi, repo| {
@@ -321,6 +329,34 @@ impl App {
             app.select_next_hunk();
             Ok(())
         });
+    }
+
+    /// Unstage the current hunk (reverse a previously staged hunk).
+    pub fn unstage_current_hunk(&mut self, repo: &Repository) -> Result<()> {
+        let file_idx = self.selected_file;
+        let hunk_idx = self.selected_hunk;
+
+        let is_staged = self
+            .files
+            .get(file_idx)
+            .and_then(|file| file.hunks.get(hunk_idx))
+            .is_some_and(|hunk| hunk.status == HunkStatus::Staged);
+
+        if is_staged {
+            if !self.no_stage {
+                let offset = self.compute_line_offset(file_idx, hunk_idx);
+                staging::unstage_hunk(
+                    repo,
+                    &self.files[file_idx],
+                    &self.files[file_idx].hunks[hunk_idx],
+                    offset,
+                )?;
+            }
+            self.files[file_idx].hunks[hunk_idx].status = HunkStatus::Skipped;
+            self.message = Some("Hunk unstaged".to_string());
+            self.select_next_hunk();
+        }
+        Ok(())
     }
 
     /// Accept the current hunk (marks as Staged without actually staging via git).
@@ -365,8 +401,8 @@ impl App {
             let tmpfile = prepare_fn(hunk)?;
             let original_content = std::fs::read_to_string(tmpfile.path())?;
             let tmp_path = tmpfile.path().to_string_lossy().to_string();
-            let pane_id = editor::open_editor(&tmp_path)?;
-            let rx = editor::wait_for_pane_close(pane_id);
+            let handle = editor::open_editor(&tmp_path)?;
+            let rx = editor::wait_for_editor_close(handle);
             self.mode = AppMode::WaitingForEditor;
             self.dirty = true;
             Ok(Some(EditorState {
@@ -415,7 +451,7 @@ impl App {
     /// Flush a pending editor result by reading the tempfile and processing it.
     ///
     /// This handles the race condition where the user presses `q` immediately
-    /// after the editor closes, before the background pane-polling thread has
+    /// after the editor closes, before the background close-detection thread has
     /// detected the close. Since vim has already written the file, we can read
     /// it directly.
     ///
@@ -666,15 +702,45 @@ pub fn run(
                             }
                         }
                         KeyCode::Tab => app.toggle_focus(),
-                        KeyCode::Char('y') => match repo {
-                            Some(r) => {
-                                if let Err(e) = app.stage_current_hunk(r) {
-                                    app.message = Some(format!("Stage error: {}", e));
+                        KeyCode::Char('y') => {
+                            if app.is_current_hunk_staged() {
+                                app.select_next_hunk();
+                            } else {
+                                match repo {
+                                    Some(r) => {
+                                        if let Err(e) = app.stage_current_hunk(r) {
+                                            app.message = Some(format!("Stage error: {}", e));
+                                        }
+                                    }
+                                    None => app.accept_current_hunk(),
                                 }
                             }
-                            None => app.accept_current_hunk(),
-                        },
-                        KeyCode::Char('n') => app.skip_current_hunk(),
+                        }
+                        KeyCode::Char('n') => {
+                            if app.is_current_hunk_staged() {
+                                match repo {
+                                    Some(r) => {
+                                        if let Err(e) = app.unstage_current_hunk(r) {
+                                            app.message = Some(format!("Unstage error: {}", e));
+                                        }
+                                    }
+                                    None => {
+                                        // Patch mode: just mark as Skipped
+                                        let fi = app.selected_file;
+                                        let hi = app.selected_hunk;
+                                        if let Some(file) = app.files.get_mut(fi)
+                                            && let Some(hunk) = file.hunks.get_mut(hi)
+                                        {
+                                            hunk.status = HunkStatus::Skipped;
+                                            app.message = Some("Hunk unstaged".to_string());
+                                            app.select_next_hunk();
+                                        }
+                                    }
+                                }
+                            } else {
+                                app.skip_current_hunk();
+                            }
+                        }
                         KeyCode::Char('s') => app.split_current_hunk(),
                         KeyCode::Char('e') => match app.start_edit() {
                             Ok(Some(state)) => {

@@ -1,16 +1,15 @@
-//! Spawn stagent in a tmux split pane and wait for completion.
+//! Spawn stagent in the preferred review environment and wait for completion.
 //!
-//! This module provides the `--spawn` functionality that allows Claude (or other
-//! tools) to launch stagent in a new tmux split, wait for the user to complete
-//! their review, and then read the feedback output.
+//! This module provides the `--spawn` functionality that allows tools to launch
+//! stagent in a cmux split when available, fall back to tmux, and finally run
+//! full-screen in the current terminal if no multiplexer is active.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
-use std::thread;
 use std::time::Duration;
 
-use crate::editor::pane_exists;
+use crate::mux::{self, SplitHandle};
 
 /// Options for spawning stagent in a split pane.
 #[derive(Debug, Clone)]
@@ -27,33 +26,16 @@ pub struct SpawnOptions {
     pub no_stage: bool,
 }
 
-/// Build the tmux split-window command for spawning stagent.
-///
-/// Constructs a command that:
-/// - Opens a horizontal split at 50% width
-/// - Returns the pane ID via -P -F '#{pane_id}'
-/// - Runs stagent with forwarded CLI args (but NOT --spawn)
-pub fn build_spawn_command(opts: &SpawnOptions) -> Vec<String> {
-    let mut cmd = vec![
-        "tmux".to_string(),
-        "split-window".to_string(),
-        "-h".to_string(),
-        "-p".to_string(),
-        "50".to_string(),
-        "-P".to_string(),
-        "-F".to_string(),
-        "#{pane_id}".to_string(),
-        "--".to_string(),
-    ];
+/// Build the child stagent argv forwarded to the spawned review session.
+pub fn build_spawn_argv(opts: &SpawnOptions) -> Vec<String> {
+    let mut cmd = Vec::new();
 
-    // Get the current executable path
     let stagent_exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "stagent".to_string());
 
     cmd.push(stagent_exe);
 
-    // Forward CLI args (but NOT --spawn to avoid infinite recursion)
     if let Some(ref output) = opts.output {
         cmd.push("--output".to_string());
         cmd.push(output.to_string_lossy().to_string());
@@ -85,44 +67,38 @@ pub fn build_spawn_command(opts: &SpawnOptions) -> Vec<String> {
 /// At 500ms per poll, this is ~30 minutes.
 const MAX_SPAWN_POLL_ITERATIONS: u32 = 3600;
 
-/// Spawn stagent in a tmux split pane and wait for it to complete.
-///
-/// Returns Ok(()) when the spawned stagent completes, or an error if
-/// the spawn fails.
+/// Spawn stagent in the preferred review environment and wait for it to complete.
 pub fn spawn_in_split(opts: &SpawnOptions) -> Result<()> {
-    let cmd = build_spawn_command(opts);
+    let argv = build_spawn_argv(opts);
 
-    let output = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .output()
-        .context("Failed to run tmux split-window")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("tmux split-window failed: {}", stderr);
+    if let Some(handle) = mux::open_command_in_preferred_split(&argv)? {
+        wait_for_handle(&handle)?;
+        return Ok(());
     }
 
-    let pane_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if pane_id.is_empty() {
-        bail!("tmux split-window did not return a pane ID");
-    }
+    let status = Command::new(&argv[0])
+        .args(&argv[1..])
+        .status()
+        .context("Failed to run stagent in the current terminal")?;
 
-    // Poll until the pane closes
-    wait_for_pane(&pane_id)?;
+    if !status.success() {
+        bail!("stagent exited with status {}", status);
+    }
 
     Ok(())
 }
 
-/// Block until the given tmux pane closes.
-fn wait_for_pane(pane_id: &str) -> Result<()> {
-    for _ in 0..MAX_SPAWN_POLL_ITERATIONS {
-        if !pane_exists(pane_id) {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(500));
+/// Block until the given split-backed review session closes.
+fn wait_for_handle(handle: &SplitHandle) -> Result<()> {
+    if mux::poll_handle_close(
+        handle,
+        MAX_SPAWN_POLL_ITERATIONS,
+        Duration::from_millis(500),
+    ) {
+        return Ok(());
     }
 
-    bail!("Timed out waiting for stagent pane to close");
+    bail!("Timed out waiting for spawned stagent session to close");
 }
 
 #[cfg(test)]
@@ -140,20 +116,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_spawn_command_basic() {
+    fn test_build_spawn_argv_basic() {
         let opts = default_opts();
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
-        assert_eq!(cmd[0], "tmux");
-        assert_eq!(cmd[1], "split-window");
-        assert!(cmd.contains(&"-h".to_string()));
-        assert!(cmd.contains(&"-p".to_string()));
-        assert!(cmd.contains(&"50".to_string()));
-        assert!(cmd.contains(&"-P".to_string()));
-        assert!(cmd.contains(&"#{pane_id}".to_string()));
-        assert!(cmd.contains(&"--".to_string()));
-
-        // Should NOT contain --spawn
+        assert!(!cmd.is_empty(), "argv should contain the child executable");
         assert!(
             !cmd.contains(&"--spawn".to_string()),
             "Command should not contain --spawn"
@@ -161,84 +128,82 @@ mod tests {
     }
 
     #[test]
-    fn test_build_spawn_command_with_output() {
+    fn test_build_spawn_argv_with_output() {
         let opts = SpawnOptions {
             output: Some(PathBuf::from("/tmp/feedback.diff")),
             ..default_opts()
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--output".to_string()));
         assert!(cmd.contains(&"/tmp/feedback.diff".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_with_files() {
+    fn test_build_spawn_argv_with_files() {
         let opts = SpawnOptions {
             files: Some("*.rs".to_string()),
             ..default_opts()
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--files".to_string()));
         assert!(cmd.contains(&"*.rs".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_with_theme() {
+    fn test_build_spawn_argv_with_theme() {
         let opts = SpawnOptions {
             theme: "dark".to_string(),
             ..default_opts()
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--theme".to_string()));
         assert!(cmd.contains(&"dark".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_default_theme_not_included() {
+    fn test_build_spawn_argv_default_theme_not_included() {
         let opts = default_opts();
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
-        // Default theme should not be explicitly passed
         assert!(!cmd.contains(&"--theme".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_with_no_stage() {
+    fn test_build_spawn_argv_with_no_stage() {
         let opts = SpawnOptions {
             no_stage: true,
             ..default_opts()
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--no-stage".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_with_context_lines() {
+    fn test_build_spawn_argv_with_context_lines() {
         let opts = SpawnOptions {
-            context_lines: 10, // Use non-default value
+            context_lines: 10,
             ..default_opts()
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--context-lines".to_string()));
         assert!(cmd.contains(&"10".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_default_context_lines_not_included() {
+    fn test_build_spawn_argv_default_context_lines_not_included() {
         let opts = default_opts();
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
-        // Default context lines should not be explicitly passed
         assert!(!cmd.contains(&"--context-lines".to_string()));
     }
 
     #[test]
-    fn test_build_spawn_command_all_options() {
+    fn test_build_spawn_argv_all_options() {
         let opts = SpawnOptions {
             output: Some(PathBuf::from("/tmp/out.diff")),
             files: Some("src/*.rs".to_string()),
@@ -246,7 +211,7 @@ mod tests {
             context_lines: 10,
             no_stage: true,
         };
-        let cmd = build_spawn_command(&opts);
+        let cmd = build_spawn_argv(&opts);
 
         assert!(cmd.contains(&"--output".to_string()));
         assert!(cmd.contains(&"/tmp/out.diff".to_string()));

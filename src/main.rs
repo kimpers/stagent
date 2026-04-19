@@ -31,7 +31,7 @@ pub struct Cli {
     #[arg(short = 'C', long = "context-lines", default_value_t = stagent::feedback::DEFAULT_CONTEXT_LINES)]
     context_lines: usize,
 
-    /// Spawn stagent in a tmux split pane and wait for completion
+    /// Spawn stagent in the preferred review environment and wait for completion
     #[arg(long)]
     spawn: bool,
 
@@ -41,20 +41,22 @@ pub struct Cli {
 }
 
 fn main() -> Result<()> {
+    // Allow opening repos with git extensions that libgit2 doesn't natively support yet
+    unsafe {
+        git2::opts::set_extensions(&["relativeworktrees"])
+            .expect("failed to register git extensions");
+    }
+
     let cli = Cli::parse();
 
     // Initialise color theme before anything renders
     stagent::ui::theme::init(&cli.theme);
 
-    // Check tmux
-    if std::env::var("TMUX").is_err() {
-        bail!("stagent requires tmux. Please run inside a tmux session.");
-    }
-
-    // --patch + --spawn is not supported (stdin can't be forwarded through tmux split)
+    // --patch + --spawn is not supported (stdin can't be forwarded through a
+    // spawned interactive review session)
     if cli.patch && cli.spawn {
         bail!(
-            "--patch and --spawn cannot be used together (stdin cannot be forwarded through a tmux split)"
+            "--patch and --spawn cannot be used together (stdin cannot be forwarded through a spawned review session)"
         );
     }
 
